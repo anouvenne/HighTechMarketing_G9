@@ -1,0 +1,173 @@
+---
+title: "Text mining HTM"
+output: html_document
+date: "2025-05-28"
+---
+
+## INTRODUCTORY STEPS
+
+We first setup the necessary packages for our analysis.
+```{r setup}
+# Set the CRAN mirror:
+local({r <- getOption("repos")
+r["CRAN"] <- "https://cran.rstudio.com/"
+options(repos = r)})
+
+# Install the packages used in this tutorial:
+packages <- c("cld2", "quanteda", "seededlda", "sentimentr")
+
+for (i in packages) {
+    if(!require(i, character.only = TRUE)) {
+        install.packages(i, dependencies = TRUE)
+    }
+}
+```
+
+Then, we can load and read the two data sets, the first regarding the BIC Cristal and the second regarding the ReMarkable 2 pen.
+```{r  loading data}
+bic_cristal_reviews <- read.csv("bic_cristal_reddit.csv")
+remarkable2_pen_reviews <- read.csv("remarkable2_pen_reddit.csv")
+```
+
+
+## DATA EXPLORATION AND PREPARATION
+
+At this point, we can start to explore, clean and prepare our two data sets, lets start by exploring their structure. First for the BIC Cristal data set.
+```{r explore structure of bic cristal}
+str(bic_cristal_reviews)
+```
+Then, for the ReMarkable 2 pen.
+```{r explore structure of remarkable 2 pen}
+str(remarkable2_pen_reviews)
+```
+
+Now, we need to check if the 'review_id' variable can be used as a UID for the different reviews in the data sets.
+```{r UID verification}
+length(unique(bic_cristal_reviews$review_id))
+length(unique(remarkable2_pen_reviews$review_id))
+```
+
+As we can observe, the length of the vector containing unique values of the 'review_id' variable doesn't match the number of observations in the data sets, this means that a quite big number of different reviews has the same 'review_id' value, thus, we need to create a different variable that can be used as a UID. To do so, since each row contains a unique document, in the following chunk we will use the 'rownames' function. Then, to ensure consistency in the data sets, we convert the UID to a character.
+```{r UID creation}
+bic_cristal_reviews$UID <- row.names(bic_cristal_reviews)
+remarkable2_pen_reviews$UID <- row.names(remarkable2_pen_reviews)
+
+# Convert UID to a character varable
+bic_cristal_reviews$UID <- as.character(bic_cristal_reviews$UID)
+remarkable2_pen_reviews$UID <- as.character(remarkable2_pen_reviews$UID)
+```
+
+Now, since we observed that the variable 'review_id' is not useful to identify the reviews, we can remove it from both data sets. Then, we move the 'UID' column as the first one.
+```{r 'review_id' removal}
+# Remove 'review_id' column from both datasets
+bic_cristal_reviews$review_id <- NULL
+remarkable2_pen_reviews$review_id <- NULL
+
+# Reorder columns to move 'UID' to the first position
+bic_cristal_reviews <- bic_cristal_reviews[, c("UID", setdiff(names(bic_cristal_reviews), "UID"))]
+remarkable2_pen_reviews <- remarkable2_pen_reviews[, c("UID", setdiff(names(remarkable2_pen_reviews), "UID"))]
+
+# Confirm removal and column order
+names(bic_cristal_reviews)
+names(remarkable2_pen_reviews)
+```
+
+At this point, we remove observations for which the 'review' variable contains a missing value (if there's any).
+```{r}
+bic_cristal_reviews <- bic_cristal_reviews[ !is.na(bic_cristal_reviews$review), ]
+remarkable2_pen_reviews <- remarkable2_pen_reviews[ !is.na(remarkable2_pen_reviews$review), ]
+```
+
+Moreover, since for sentiment analysis the tools are language specific, we verify that all reviews are in English, and, if they are not, we remove the ones written in other languages
+```{r assign language}
+# For the BIC Cristal
+bic_cristal_reviews$language <- cld2::detect_language(bic_cristal_reviews$review)
+head(cbind(table(bic_cristal_reviews$language)), 20)
+
+# For the ReMarkable 2 pen
+remarkable2_pen_reviews$language <- cld2::detect_language(remarkable2_pen_reviews$review)
+head(cbind(table(remarkable2_pen_reviews$language)), 20)
+```
+
+As we can see, all reviews seem to be written in English, but for the BIC data set, it looks like 6 out of the 185 reviews cannot be classified, probably because they contain elements that disturb the functioning of the 'cld2' function (e.g. numeric values, symbols,..), furthermore, false negatives might exist.
+```{r}
+#copenhagen_reviews <- copenhagen_reviews[ which(copenhagen_reviews$language %in% "en"), ] #since all reviews are in english, we can avoid this i think
+```
+
+Now, we remove (if there's any) the characters that are not in the standard ASCII range. This cleans the texts of the reviews and makes them more suitable to be elaborated by a computer. We start by marking those reviews that contain non-ASCII characters, then, if needed, we find-and-replace those characters with ones that are in the ASCII range.
+```{r non_ascii}
+# BIC Cristal
+bic_cristal_reviews$non_ascii <- grepl("[^\x01-\x7F]", bic_cristal_reviews$review) # Mark reviews of interest  
+bic_cristal_reviews[ which(bic_cristal_reviews$non_ascii %in% TRUE)[30], ]$review
+
+# ReMarkable 2 pen
+remarkable2_pen_reviews$non_ascii <- grepl("[^\x01-\x7F]", remarkable2_pen_reviews$review) # Mark reviews of interest  
+remarkable2_pen_reviews[ which(remarkable2_pen_reviews$non_ascii %in% TRUE)[30], ]$review
+```
+
+As we can see, there's no reviews that contain non-ASCII characters.
+
+
+
+```{r creation of corpus}
+corpus <- quanteda::corpus(copenhagen_reviews, 
+                           docid_field = "id",
+                           text_field = "comments")
+
+summary(corpus, 10)
+
+```
+
+```{r corpus random draw}
+as.character(corpus[ sample(length(corpus), 1) ])
+```
+
+```{r sentimentr}
+quanteda::docvars(corpus, field = "ave_sentiment") <- sentimentr::sentiment_by(sentimentr::get_sentences(corpus))$ave_sentiment
+```
+
+```{r plot sentiment scores}
+hist(quanteda::docvars(corpus)$ave_sentiment)
+```
+
+```{r explore sentiments}
+as.character(corpus[ which(quanteda::docvars(corpus)$ave_sentiment == summary(quanteda::docvars(corpus)$ave_sentiment)[1]), ])
+as.character(corpus[ which(quanteda::docvars(corpus)$ave_sentiment == summary(quanteda::docvars(corpus)$ave_sentiment)[6]), ])
+```
+
+```{r feature tokenization}
+tokens <- quanteda::tokens(corpus, 
+                           what = "word", # change the keyword
+                           remove_punct = TRUE,
+                           remove_symbols = TRUE,
+                           remove_numbers = TRUE,
+                           remove_url = TRUE,
+                           remove_separators = TRUE,
+                           split_hyphens = FALSE,
+                           split_tags = FALSE,
+                           include_docvars = TRUE,
+                           padding = FALSE,
+                           verbose = TRUE)
+```
+
+```{r tokens sample}
+tokens[ sample(length(tokens), 1) ]
+```
+
+```{r keywords in context}
+data.frame(quanteda::kwic(tokens, pattern = "loud"))[ c(1:5), c(4:6) ] #Change the word loud
+tokens <- quanteda::tokens_tolower(tokens)
+```
+
+```{r explore stopwords}
+quanteda::stopwords("en")
+tokens <- quanteda::tokens_remove(tokens, pattern = stopwords("en"))
+```
+
+```{r dfm creation}
+dfm <- quanteda::dfm(tokens)
+dfm
+topfeatures(dfm)
+```
+
+
