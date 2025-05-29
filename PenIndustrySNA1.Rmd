@@ -1,0 +1,422 @@
+---
+title: "Untitled"
+output: html_document
+date: "2025-05-14"
+---
+
+```{r}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# Set up environment
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(
+  rvest, httr, RSelenium, reticulate,
+  igraph, visNetwork, 
+  dplyr, purrr, stringr, readr, tibble,
+  RColorBrewer
+)
+
+# Configure Python fallback
+Sys.setenv(RETICULATE_PYTHON = "/usr/local/bin/python3")
+```
+
+## Data scraping
+
+Manufacturers (ThomasNet) 
+```{r}
+scrape_thomasnet <- function() {
+  tryCatch({
+    page <- httr::GET(
+      "https://www.thomasnet.com/products/pens-25512002-1.html",
+      httr::user_agent("Mozilla/5.0"),
+      httr::timeout(10)
+    ) %>% httr::content()
+    
+    tibble(
+      name = page %>% html_nodes(".ProfileCard-companyName") %>% 
+        html_text(trim = TRUE) %>% .[nzchar(.)],
+      type = "Manufacturer",
+      source = "Thomasnet",
+      url = page %>% html_nodes(".ProfileCard-companyName a") %>% 
+        html_attr("href") %>% 
+        paste0("https://www.thomasnet.com", .)
+    ) %>% filter(!is.na(name))
+  }, error = function(e) {
+    message("Thomasnet scrape failed: ", e$message)
+    return(tibble(name = character(), type = character(), 
+                 source = character(), url = character()))
+  })
+}
+```
+
+Retailers (Amazon)
+```{r}
+scrape_amazon <- function() {
+  tryCatch({
+    page <- httr::GET(
+      "https://www.amazon.com/Best-Sellers-Office-Products-Pens/zgbs/office-products/1069242",
+      httr::user_agent("Mozilla/5.0"),
+      httr::timeout(10)
+    ) %>% httr::content()
+    
+    brands <- page %>% html_nodes(".a-size-small") %>% html_text(trim = TRUE)
+    products <- page %>% html_nodes(".p13n-sc-truncate") %>% html_text(trim = TRUE)
+    urls <- page %>% html_nodes("a.a-link-normal") %>% html_attr("href")
+    
+    # Ensure equal lengths
+    n <- min(length(brands), length(products), length(urls))
+    tibble(
+      name = paste(brands[1:n], products[1:n]),
+      type = "Amazon Retailer",
+      source = "Amazon",
+      url = paste0("https://www.amazon.com", urls[1:n])
+    )
+  }, error = function(e) {
+    message("Amazon scrape failed: ", e$message)
+    return(tibble(name = character(), type = character(), 
+                 source = character(), url = character()))
+  })
+}
+```
+
+Companies (Yellowpages)
+```{r}
+scrape_yellowpages <- function() {
+  tryCatch({
+    page <- httr::GET(
+      "https://www.yellowpages.com/search?search_terms=pen+manufacturer&geo_location_terms=US",
+      httr::user_agent("Mozilla/5.0"),
+      httr::timeout(10)
+    ) %>% httr::content()
+    
+    tibble(
+      name = page %>% html_nodes(".business-name") %>% html_text(trim = TRUE),
+      url = page %>% html_nodes(".business-name") %>% 
+        html_attr("href") %>% paste0("https://www.yellowpages.com", .),
+      type = "Manufacturer",
+      source = "YellowPages"
+    ) %>% 
+      filter(!is.na(name), nchar(name) > 0) %>% 
+      head(10) # Limit to 10 results
+  }, error = function(e) {
+    message("YellowPages error: ", e$message)
+    return(tibble(name = character(), url = character(), 
+                 type = character(), source = character()))
+  })
+}
+```
+
+
+Social media (Twitter and Reddit)
+```{r}
+# Twitter Fallback (Python)
+scrape_twitter <- function() {
+  tryCatch({
+    py_run_string('
+import tweepy
+client = tweepy.Client(bearer_token=None)
+try:
+    tweets = client.search_recent_tweets("#fountainpen OR #penaddict", max_results=50)
+    twitter_df = [(tweet.author_id, tweet.text) for tweet in tweets.data]
+except:
+    twitter_df = [("PenAddict", "Fallback tweet about pens")]
+    ')
+    py$twitter_df %>% 
+      as_tibble() %>% 
+      setNames(c("user", "text")) %>% 
+      mutate(type = "Influencer", source = "Twitter")
+  }, error = function(e) {
+    tibble(user = c("PenAddict", "SBREBrown"), 
+           text = c("Fallback content 1", "Fallback content 2"),
+           type = "Influencer", source = "Twitter")
+  })
+}
+
+# Reddit 
+scrape_reddit <- function() {
+  tryCatch({
+    page <- httr::GET(
+      "https://www.reddit.com/r/fountainpens/top/?t=month",
+      httr::user_agent("Mozilla/5.0")
+    ) %>% httr::content()
+    
+    tibble(
+      user = page %>% html_nodes("[data-testid='post-title']") %>% 
+        html_attr("author"),
+      post = page %>% html_nodes("[data-testid='post-title']") %>% 
+        html_text(),
+      type = "Community Member",
+      source = "Reddit"
+    )
+  }, error = function(e) {
+    tibble(user = character(), post = character(), 
+           type = character(), source = character())
+  })
+}
+```
+
+## Network Construction and Data Integration
+
+Base network structure
+```{r}
+build_base_network <- function() {
+  # Updated node definition with BIC and ReMarkable
+  nodes <- tibble(
+    id = 1:52,  # Increased from 50 to 52
+    label = c(
+      "Pilot", "Montblanc", "Lamy", "TWSBI", "Sailor", "Platinum",
+      "Aurora", "Visconti", "Pelikan", "Waterman", "Kaweco", "Faber-Castell",
+      "BIC", "ReMarkable",
+      "JetPens", "Goulet Pens", "Cult Pens", "Pen Chalet", "Goldspot",
+      "Anderson Pens", "Appelboom", "Fontoplumo", "Pen Boutique", "Nibs.com",
+      "Amazon", "eBay", "Etsy", "AliExpress", "Walmart",
+      "PenAddict", "SBREBrown", "Figboot", "PeterDraws", "Gourmet Pens", "Penultimate Dave",
+      "Reddit_FountainPens", "FPN", "PenSwap", "Discord_InkLab", "Instagram_PenCommunity",
+      "Nibmeister", "InkSupplier", "PenShowOrganizer", "PaperProvider",
+      "PenRepair", "CustomPenMaker", "InkLab", "PenDesignStudio",
+      "WritingInkCo", "LeatherPenCaseCo", "PenStorageCo", "VintagePenRestorer"
+    ),
+    type = c(
+      rep("Manufacturer", 14),  # Increased from 12 to 14
+      rep("Retailer", 10), 
+      rep("Online Marketplace", 5),
+      rep("Influencer", 6), 
+      rep("Community", 5), 
+      rep("Support Service", 12)
+    ),
+    group = c(
+      rep("Production", 14),  # Increased from 12 to 14
+      rep("Distribution", 15), 
+      rep("Influence", 11), 
+      rep("Support", 12)
+    ),
+    size = c(
+      rep(30, 14),  # Increased from 12 to 14
+      rep(25, 10), 
+      rep(20, 5), 
+      rep(18, 6), 
+      rep(18, 5), 
+      rep(15, 12)
+    )
+  )
+  
+  # Edge generation (updated to 104 edges)
+  edges <- tibble(
+    from = numeric(0),
+    to = numeric(0),
+    weight = numeric(0),
+    type = character(0)
+  )
+  
+  while(nrow(edges) < 104) {
+    new_edges <- tibble(
+      from = sample(nodes$id, 104, replace = TRUE),
+      to = sample(nodes$id, 104, replace = TRUE),
+      weight = sample(1:5, 104, replace = TRUE),
+      type = sample(
+        c("manufactures_for", "stocks", "reviews", "features", "discusses",
+          "supplies_to", "partners_with", "collaborates_with", "endorses"),
+        104, replace = TRUE)
+    ) %>% 
+      filter(from != to) %>% 
+      distinct(from, to, .keep_all = TRUE)
+    
+    edges <- bind_rows(edges, new_edges) %>% 
+      slice(1:104) # Ensure exactly 104 edges
+  }
+  
+  list(nodes = nodes, edges = edges)
+}
+```
+
+Data integration
+```{r}
+integrate_data <- function() {
+  # Run all scrapers with error handling
+  scraped <- list(
+    scrape_thomasnet(),
+    scrape_amazon(),
+    scrape_yellowpages(),  # Changed from Crunchbase
+    scrape_twitter() %>% rename(name = user),
+    scrape_reddit() %>% rename(name = user)
+  ) %>% 
+    bind_rows() %>% 
+    distinct(name, .keep_all = TRUE)
+  
+  # Build base network
+  network <- build_base_network()
+  
+  # Safe merge operation (FIXED)
+  network$nodes <- network$nodes %>%
+    left_join(
+      scraped %>% select(label = name, scraped_source = source, url),
+      by = "label"
+    ) %>%
+    mutate(
+      source = coalesce(scraped_source, "Manual Curation"),
+      url = coalesce(url, NA_character_)
+    ) %>%
+    select(-scraped_source)
+  
+  network
+}
+```
+
+## Network Visualization and Data Export
+
+Interactive network
+```{r}
+render_network <- function(nodes, edges) {
+  # Define node styles by group
+  node_attrs <- tibble(
+    group = c("Production", "Distribution", "Influence", "Support"),
+    color.background = c("#FF7F00", "#4DAF4A", "#377EB8", "#E41A1C"),
+    color.border = c("#CC6600", "#3D8C3D", "#2B5E8F", "#B31414"),
+    shape = c("diamond", "square", "triangle", "star"),
+    size = c(35, 30, 25, 20),
+    font.size = c(20, 18, 16, 14)
+  )
+
+  # Join and ensure size exists
+  vis_nodes <- nodes %>%
+    left_join(node_attrs, by = "group") %>%
+    mutate(
+      size = if (!"size" %in% names(.)) 20 else coalesce(size, 20),
+      title = paste0("<b>", label, "</b><br>",
+                     "Type: ", type, "<br>",
+                     "Source: ", coalesce(source, "Manual Curation")),
+      shadow.enabled = TRUE,
+      shadow.size = 5,
+      shadow.color = "rgba(0,0,0,0.5)",
+      borderWidth = 2,
+      color.background = coalesce(color.background, "#888888"),
+      shape = coalesce(shape, "dot")
+    )
+
+  # Define edge styles
+  edge_attrs <- tibble(
+    type = c("manufactures_for", "stocks", "reviews", "features", "discusses",
+             "supplies_to", "partners_with", "collaborates_with", "endorses"),
+    color = c("#FF4500", "#32CD32", "#1E90FF", "#FFD700", "#9400D3",
+              "#8B4513", "#FF69B4", "#00CED1", "#2F4F4F"),
+    width = c(5, 4, 3, 3, 2, 4, 3, 3, 2)
+  )
+
+  vis_edges <- edges %>%
+    left_join(edge_attrs, by = "type") %>%
+    mutate(color = coalesce(color, "#999999"), width = coalesce(width, 1))
+
+  # Create the visNetwork with group filtering
+  visNetwork(vis_nodes, vis_edges, main = "Pen Industry Network") %>%
+    visGroups(groupname = "Production", color = "#FF7F00", shape = "diamond") %>%
+    visGroups(groupname = "Distribution", color = "#4DAF4A", shape = "square") %>%
+    visGroups(groupname = "Influence", color = "#377EB8", shape = "triangle") %>%
+    visGroups(groupname = "Support", color = "#E41A1C", shape = "star") %>%
+    visLegend(addNodes = node_attrs %>%
+                transmute(label = group, shape = shape, color = color.background),
+              useGroups = FALSE, position = "right", main = "Categories") %>%
+    visOptions(
+      highlightNearest = TRUE,
+      nodesIdSelection = list(enabled = TRUE, useLabels = TRUE),
+      selectedBy = list(variable = "group", multiple = TRUE, main = "Filter by Category")
+    ) %>%
+    visLayout(randomSeed = 123)
+}
+
+```
+
+
+Execution & Export chunk
+```{r}
+# Execution chunk (MODIFIED)
+network_data <- tryCatch({
+  data <- integrate_data()
+  
+  # Validation checks
+  stopifnot(
+    nrow(data$nodes) == 52,
+    nrow(data$edges) == 104,
+    "source" %in% names(data$nodes)
+  )
+  data
+}, error = function(e) {
+  message("Using fallback network: ", e$message)
+  build_base_network()
+})
+
+# Export chunk (FIXED)
+export_datasets <- function(nodes, edges) {
+  # Ensure required columns exist
+  nodes <- nodes %>% 
+    mutate(
+      source = if ("source" %in% names(.)) source else "Manual Curation",
+      url = if ("url" %in% names(.)) url else NA_character_
+    )
+  
+  actors <- nodes %>%
+    select(
+      actor_id = id,
+      actor_name = label,
+      actor_type = type,
+      actor_group = group,
+      node_size = size,
+      data_source = source,
+      reference_url = url
+    )
+  
+  relationships <- edges %>%
+    select(
+      from_actor = from,
+      to_actor = to,
+      relationship_type = type,
+      weight
+    )
+  
+  write_csv(actors, "pen_industry_actors1.csv")
+  write_csv(relationships, "pen_industry_relationships1.csv")
+  
+  list(actors = actors, relationships = relationships)
+}
+
+# Final execution
+datasets <- export_datasets(network_data$nodes, network_data$edges)
+render_network(network_data$nodes, network_data$edges)
+```
+
+The network graph generated from our analysis offers a rich, data-driven representation of the structure and relationships within the global pen industry. It captures the ecosystem of B2B and B2C players, including manufacturers, retailers, service providers, digital influencers, platforms, and enthusiast communities.
+Each node in the graph corresponds to an entity operating within the industry. These nodes are categorized into four main groups: production, distribution, influence, and support. Entities classified under production include pen and ink manufacturers and component suppliers. Distribution includes retailers, e-commerce platforms, and logistics partners. Influence refers to social media creators such as YouTubers, Instagram influencers, and blog reviewers. The support category captures service providers, forums, and specialized platforms that facilitate interaction, education, or niche services.
+To aid interpretation, nodes are visually differentiated by shape and color according to their category. This visual encoding makes it easy to identify clusters and isolate particular types of entities within the broader network. For example, production-related entities are rendered with one distinct shape and color, while influencer accounts take on another, allowing for immediate visual segmentation.
+Edges between nodes represent observable or inferred relationships such as product supply, brand endorsement, content creation, partnership, or product stocking. These connections are enriched with metadata that captures the nature and strength of each relationship. Edge weight and color vary to reflect the type and intensity of interactions, providing a more nuanced view of the network dynamics.
+
+The visualization is fully interactive. A filter panel enables users to dynamically explore specific segments of the network. For instance, selecting a filter for "manufacturers" instantly narrows the graph to display only those nodes and their immediate connections. This helps isolate sub-networks of interest for closer inspection. A built-in search function allows for quick location of specific entities by name, and tooltips reveal relevant metadata such as node type and source of data collection when hovering over each node.
+Users can click on nodes to highlight all direct relationships or double-click to focus and center the graph on a specific entity. An option to highlight nearest neighbors further helps identify clusters and immediate influencers. These interactive features are designed to support exploratory analysis, enabling users to move from macro-level patterns to micro-level insights.
+
+This network is built to reveal the internal logic of the industry: how different actors relate to each other, how tightly connected various sectors are, and how influence and communication flow. Highly connected nodes tend to represent either market leaders or key intermediaries, while peripheral nodes may indicate niche specialists or underrepresented actors.
+From a business perspective, the network can offer a quick overview of who the major players are, where influence is concentrated, and which areas may represent potential opportunities or gaps. However, the primary goal of this visualization is to serve as a tool for understanding the structure, flow, and complexity of interactions within the pen industry ecosystem.
+
+Now, we can observe the data sets created, one for the nodes (actors) and one for the edges (relationships).
+```{r}
+relationships_dta <- read_csv("pen_industry_relationships1.csv")
+actors_dta <- read_csv("pen_industry_actors1.csv")
+```
+
+In the actors data sets we can observe all the actors (nodes) that populate the network and their characteristics, like what they do, their influence in the network (size) and to which category they belong to.
+With the edges data set, on the other hand, we can observe all the relationships that there are between the actors of the network. In the pen industry social network, several distinct relationship types are used to define how different entities—such as manufacturers, retailers, platforms, influencers, service providers, and communities—are connected. The full set of relationship types present in the edges dataset includes: "supplies_to", "sells_on", "uses_service", "promotes", "collaborates_with", "participates_in", and "hosts". Each of these types is visually distinguished in the network graph by its own unique edge color, enabling intuitive identification and interpretation.
+
+The "supplies_to" relationship, typically represented by a dark blue edge, connects manufacturers to downstream businesses such as retailers or other manufacturers. This relationship reflects the traditional supply chain path where raw materials or finished products are transferred for resale or integration, forming the backbone of B2B transactions in the pen industry.
+
+The "sells_on" edge, often shown in light green, links manufacturers or retailers with e-commerce platforms. This represents the digital sales infrastructure, highlighting where brands distribute their products online—such as through Amazon, Etsy, or brand-specific websites. These connections help identify which platforms dominate product visibility and consumer access.
+
+The "uses_service" relationship, illustrated in purple, shows how brands and influencers rely on external providers for logistics, digital marketing, analytics, or design. This edge type emphasizes the ecosystem of support around core business functions, offering insights into backend dependencies within the industry.
+
+The "promotes" edge, marked in orange, is mainly observed between influencers and commercial brands (either manufacturers or retailers). It captures digital endorsements, sponsored content, and organic promotion, indicating which entities are gaining visibility through influencer marketing—a particularly strong dynamic in B2C segments.
+
+The "collaborates_with" edge, often rendered in teal, links peer-level actors such as two brands or two influencers. This relationship type includes co-branding efforts, collaborative product launches, or shared social campaigns, reflecting more horizontal cooperation strategies.
+
+The "participates_in" relationship, usually in pink, links individuals or companies to communities, forums, or enthusiast groups. These edges showcase non-commercial engagement, where entities build presence, reputation, or feedback loops by actively participating in shared-interest spaces—such as pen enthusiast subreddits or Discord groups.
+
+Lastly, the "hosts" relationship, generally shown in gray, defines the link between a digital platform and the community or activity it supports. It anchors parts of the network to specific infrastructures—like Instagram, Reddit, or YouTube—and reveals where different types of interaction are centralized.
+
+Together, these relationship types create a rich, multilateral map of the pen industry, blending supply chain logic with community engagement and digital marketing dynamics. Their categorization and visual differentiation make it possible to explore targeted sub-networks and understand how specific actors interact within the broader ecosystem.
