@@ -1,0 +1,90 @@
+---
+title: "SNA HTM R1"
+output: html_document
+date: "2025-05-28"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+summary(cars)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+```{r}
+# Load required libraries
+library(tidyverse)
+
+# Read the data
+data <- read.csv("Block 0 final database4.csv", stringsAsFactors = FALSE, sep = ";")
+# Remove columns that are all NA
+data <- data[, colSums(is.na(data)) < nrow(data)]
+```
+```{r}
+str(data)
+```
+```{r}
+# Load necessary packages
+library(dplyr)
+
+# Manually coerce ordinal/categorical-to-numeric
+numeric_data <- data %>%
+  mutate(
+    Brand = as.numeric(Brand),
+    Company = as.numeric(Company),
+    Country.of.Origin= as.numeric(Country.of.Origin),
+    Market.Size = as.numeric(Market.Size),
+    Pricing = as.numeric(Pricing),
+    Customer = as.numeric(Customer),
+    Ballpoint = as.numeric(Ballpoint),
+    Calligraphy = as.numeric(Calligraphy),
+    Gel.pen = as.numeric(Gel.pen),
+    Marker = as.numeric(Marker),
+    Fountain.pen = as.numeric(Fountain.pen),
+    Fineliner = as.numeric(Fineliner)
+  ) %>%
+  # Select only these relevant variables
+  select(Brand, Company, Country.of.Origin, Market.Size, Pricing, Customer, Ballpoint, Calligraphy, Gel.pen, Marker, Fountain.pen, Fineliner)
+
+```
+```{r}
+# Compute Spearman correlation matrix
+cor_matrix <- cor(numeric_data, method = "spearman", use = "pairwise.complete.obs")
+
+# Visualize with qgraph
+library(qgraph)
+qgraph(
+  cor_matrix,
+  layout = "spring",
+  minimum = 0.2,
+  cut = 0.1,
+  labels = colnames(numeric_data),
+  label.cex = 1,
+    vsize = 10,
+  maximum = 2
+)
+
+
+
+```
+
+
+```
+
