@@ -464,6 +464,50 @@ cbind(seededlda::terms(textmodel_positive_bic, 10),
 cbind(seededlda::terms(textmodel_positive_rm, 10), 
       seededlda::terms(textmodel_negative_rm, 10))
 ```
+```{r}
+library(dplyr)
+library(ggplot2)
+# Get topic distribution for each document
+topic_bic_pos <- data.frame(
+  topic = topics(textmodel_positive_bic),
+  sentiment = "Positive",
+  brand = "BIC Cristal"
+)
+
+topic_bic_neg <- data.frame(
+  topic = topics(textmodel_negative_bic),
+  sentiment = "Negative",
+  brand = "BIC Cristal"
+)
+
+topic_rm_pos <- data.frame(
+  topic = topics(textmodel_positive_rm),
+  sentiment = "Positive",
+  brand = "Remarkable 2"
+)
+
+topic_rm_neg <- data.frame(
+  topic = topics(textmodel_negative_rm),
+  sentiment = "Negative",
+  brand = "Remarkable 2"
+)
+# Combine all topic data
+topic_all <- bind_rows(topic_bic_pos, topic_bic_neg, topic_rm_pos, topic_rm_neg)
+topic_dist <- topic_all %>%
+  group_by(brand, sentiment, topic) %>%
+  summarise(doc_count = n(), .groups = "drop")
+#plot
+ggplot(topic_dist, aes(x = factor(topic), y = doc_count, fill = sentiment)) +
+  geom_col(position = "dodge") +
+  facet_wrap(~ brand) +
+  labs(title = "Topic Distribution per Brand",
+       x = "Topic", y = "Number of Documents") +
+  theme_minimal() +
+  scale_fill_brewer(palette = "Set1")
+
+```
+
+
 The first two column represent the positive sentiment, while the others are negative sentiment. As we can wee here, the topics in BIC Cristal are related to the quality of the pen, its price, and its availability. While in ReMarkable 2 Pen, the topics are related to the quality of the pen, its price, and its usability. But we notice there are words that might be not meaningful in understanding the customers review such as pen, pens, cristal, etc. We will improve the model performance
 
 ## 6. MODEL IMPROVEMENT
@@ -531,6 +575,47 @@ textmodel_positive_bic_new <- seededlda::textmodel_lda(dfm_tmp_bic[ docvars(dfm_
 textmodel_negative_bic_new <- seededlda::textmodel_lda(dfm_tmp_bic[ docvars(dfm_tmp_bic)$ave_sentiment < 0, ], k = 2)
 cbind(terms(textmodel_positive_bic_new), terms(textmodel_negative_bic_new))
 ```
+```{r}
+library(dplyr)
+library(ggplot2)
+library(tidytext)  # Needed for reorder_within() and scale_x_reordered()
+
+# Extract top words per topic
+positive_terms_bic <- terms(textmodel_positive_bic_new, 10)
+negative_terms_bic <- terms(textmodel_negative_bic_new, 10)
+
+# Convert matrices into data frames
+positive_df_bic <- data.frame(
+  word = as.vector(positive_terms_bic),
+  topic = rep(1:ncol(positive_terms_bic), each = nrow(positive_terms_bic)),
+  sentiment = "Positive"
+)
+
+negative_df_bic <- data.frame(
+  word = as.vector(negative_terms_bic),
+  topic = rep(1:ncol(negative_terms_bic), each = nrow(negative_terms_bic)),
+  sentiment = "Negative"
+)
+
+# Combine positive & negative topics
+topics_combined_bic <- bind_rows(positive_df_bic, negative_df_bic)
+
+# Count occurrences of words per topic
+word_counts_bic <- topics_combined_bic %>%
+  group_by(topic, word, sentiment) %>%
+  summarise(count = n(), .groups = "drop")
+
+# Plot: sorted within each facet, to understand word and sentiment mapping
+ggplot(word_counts_bic, aes(x = reorder_within(word, count, topic), y = count, fill = sentiment)) +
+  geom_col(show.legend = TRUE) +
+  facet_wrap(~ topic + sentiment, scales = "free_y") +
+  coord_flip() +
+  scale_x_reordered() +  # Needed to handle reordered_within
+  labs(title = "Top Words per Topic and Sentiment",
+       x = "Word", y = "Count") +
+  theme_minimal()
+
+```
 
 
 
@@ -576,6 +661,49 @@ textmodel_positive_RM_new <- seededlda::textmodel_lda(dfm_tmp_RM[ docvars(dfm_tm
 textmodel_negative_RM_new <- seededlda::textmodel_lda(dfm_tmp_RM[ docvars(dfm_tmp_RM)$ave_sentiment < 0, ], k = 2)
 cbind(terms(textmodel_positive_RM_new), terms(textmodel_negative_RM_new))
 ```
+```{r}
+library(dplyr)
+library(ggplot2)
+library(tidytext)  # Needed for reorder_within() and scale_x_reordered()
+
+# Extract top words per topic
+positive_terms_RM <- terms(textmodel_positive_RM_new, 10)
+negative_terms_RM <- terms(textmodel_negative_RM_new, 10)
+
+# Convert matrices into data frames
+positive_df_RM <- data.frame(
+  word = as.vector(positive_terms_RM),
+  topic = rep(1:ncol(positive_terms_RM), each = nrow(positive_terms_RM)),
+  sentiment = "Positive"
+)
+
+negative_df_RM <- data.frame(
+  word = as.vector(negative_terms_RM),
+  topic = rep(1:ncol(negative_terms_RM), each = nrow(negative_terms_RM)),
+  sentiment = "Negative"
+)
+
+# Combine positive & negative topics
+topics_combined_RM <- bind_rows(positive_df_RM, negative_df_RM)
+
+# Count occurrences of words per topic
+word_counts_RM <- topics_combined_RM %>%
+  group_by(topic, word, sentiment) %>%
+  summarise(count = n(), .groups = "drop")
+
+# Plot: sorted within each facet
+ggplot(word_counts_RM, aes(x = reorder_within(word, count, topic), y = count, fill = sentiment)) +
+  geom_col(show.legend = TRUE) +
+  facet_wrap(~ topic + sentiment, scales = "free_y") +
+  coord_flip() +
+  scale_x_reordered() +  # Needed to handle reordered_within
+  labs(title = "Top Words per Topic and Sentiment",
+       x = "Word", y = "Count") +
+  theme_minimal()
+
+```
+
+
 ```{r}
 library(wordcloud)
 library(RColorBrewer)
@@ -710,6 +838,7 @@ wordcloud(words = names(freq), freq = freq, min.freq = 5,
 
 
 ### Remarkable 2 Pen
+
 ```{r}
 #Remarkable 2 Pen
 library(quanteda)
@@ -827,7 +956,7 @@ wordcloud(words = names(freq), freq = freq, min.freq = 5,
 
 ## 8. Statistical Test
 
-**t-test**
+#### t-test
 ```{r t-test}
 t_test_polarity <- t.test(bic_cristal_reviews$polarity, remarkable2_pen_reviews$polarity)
 print(t_test_polarity)
@@ -868,7 +997,7 @@ boxplot(bic_cristal_reviews$subjectivity, remarkable2_pen_reviews$subjectivity,
 
 ```
 
-**Annova test**
+#### Annova test
 ```{r}
 library(dplyr)
 
@@ -898,4 +1027,39 @@ BIC Cristal and ReMarkable 2 Pen reviews have similar sentiment (polarity) and s
 
 No statistically significant difference is detected between them on either metric.
 
-Both t-tests and ANOVA are consistent in this finding.
+Both t-tests and ANOVA are consistent in this finding.<br>
+
+
+#### Chi-Square test
+```{r}
+# Example: Add sentiment category if not already present
+bic_cristal_reviews$sentiment_cat <- ifelse(bic_cristal_reviews$polarity >= 0, "positive", "negative")
+remarkable2_pen_reviews$sentiment_cat <- ifelse(remarkable2_pen_reviews$polarity >= 0, "positive", "negative")
+
+# Combine brand label
+bic_cristal_reviews$brand <- "BIC Cristal"
+remarkable2_pen_reviews$brand <- "ReMarkable 2"
+
+# Combine into one data frame
+combined_reviews <- rbind(bic_cristal_reviews, remarkable2_pen_reviews)
+
+# Create contingency table: brand vs sentiment category
+table_sentiment <- table(combined_reviews$brand, combined_reviews$sentiment_cat)
+
+# Run Chi-square test
+chisq_test <- chisq.test(table_sentiment)
+print(table_sentiment)
+print(chisq_test)
+
+```
+
+Since p-value = 0.9156 is much greater than 0.05, you fail to reject the null hypothesis.
+
+This means:
+
+There is no statistically significant difference in the distribution of positive and negative reviews between BIC Cristal and ReMarkable 2.
+
+Conclusion
+Even though BIC has slightly more positive reviews in absolute terms, the proportions are not significantly different — they could be due to random variation.
+
+If you'd like, I can help you visualize this difference with a bar chart or compute effect sizes to complement the test.
