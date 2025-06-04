@@ -43,11 +43,11 @@ safe_scrape_reddit <- function(product_name) {
     # Search parameters
     search_config <- list(
       "BIC-Cristal" = list(
-        terms = "BIC+Cristal+pen -meth -glass",
-        subs = c("pens", "stationery", "Art", "BuyItForLife"),
-        include = "bic.*cristal|ballpoint",
-        exclude = "meth|glass|drug|vape"
-      ),
+  terms = "BIC+pen+OR+ballpoint+OR+Cristal -meth -glass -vape",
+  subs = c("pens", "stationery", "Art", "BuyItForLife", "drawing", "Productivity", "OfficeSupplies"),
+  include = "bic|cristal|ballpoint|cheap.*pen",
+  exclude = "meth|glass|drug|vape"
+),
       "Remarkable-2" = list(
         terms = "reMarkable+pen+OR+rm2+stylus -tablet",
         subs = c("RemarkableTablet", "EDC", "DigitalNoteTaking"),
@@ -62,14 +62,14 @@ safe_scrape_reddit <- function(product_name) {
     threads <- rate_limited_find(
       keywords = config$terms,
       subreddit = config$subs,
-      sort_by = "new",
+      sort_by = "relevance",
       period = "all"
     )
     
     if(nrow(threads) < 5) stop("Insufficient threads found")
     
     # Scrape comments with rate limiting
-    content <- map_df(head(threads$url, 100), ~{    # By increasing the number you increase data sets 
+    content <- map_df(head(threads$url, 1000), ~{    # By increasing the number you increase data sets 
       tryCatch({
         rate_limited_content(.x)$comments %>%
           transmute(
@@ -85,8 +85,8 @@ safe_scrape_reddit <- function(product_name) {
       }, error = function(e) tibble())
     })
     
-# Keep only the first 200 unique reviews
-slice_head(content %>% distinct(), n = 200)     # To obtain around 200 reviews per product
+# Keep only the first 2000 unique reviews
+slice_head(content %>% distinct(), n = 2000)     # To obtain around 2000 reviews per product
 
   } )
 }
@@ -94,6 +94,7 @@ slice_head(content %>% distinct(), n = 200)     # To obtain around 200 reviews p
 
 First, product specific search parameters are set to exclude non-relevant content, then, subreddits are defined to focus on relevant communities for our products. After that there are some quality control layers, where for example a number of minimum 10 words per reviews is set. Finally some safety mechanisms are introduced to ensure the correct functioning of the function.
 After creating the function, it is possible to move to data collection, where the scraping function is applied to our products of interest to successfully obtain the reviews and create the data sets.
+
 
 ## DATA COLLECTION
 
@@ -119,8 +120,8 @@ Finally, with this last chunk the two data sets are stored in the same working d
 # ---------------------------
 # CHUNK 5: DATA EXPORT
 # ---------------------------
-write.csv(bic_data, "bic_cristal_reddit.csv", row.names = FALSE)
-write.csv(remarkable_data, "remarkable2_pen_reddit.csv", row.names = FALSE)
+write.csv(bic_data, "bic_cristal_reddit2.csv", row.names = FALSE)
+write.csv(remarkable_data, "remarkable2_pen_reddit2.csv", row.names = FALSE)
 ```
 
 
