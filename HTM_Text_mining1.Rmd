@@ -263,7 +263,7 @@ summary(quanteda::docvars(corpusbic)$ave_sentiment)
 #Remarkable 2 Pen
 summary(quanteda::docvars(corpusRM)$ave_sentiment)
 ```
-The value indicates that sentiment for both are positive, with BIC Cristal having a mean of 0.25 and a median of 0.28, while Remarkable 2 Pen has a mean of 0.16 and a median of 0.18. Let's explore sentiments with other method.
+The value indicates that sentiment for both are positive, Let's explore sentiments with other method.
 ```{r explore sentiments}
 #BIC Cristal
 as.character(corpusbic[ which(quanteda::docvars(corpusbic)$ave_sentiment == summary(quanteda::docvars(corpusbic)$ave_sentiment)[3]), ])
@@ -496,8 +496,7 @@ head(topics(textmodel_negative_rm))
 table(topics(textmodel_positive_rm))
 table(topics(textmodel_negative_rm))
 ```
-Based on the result above. in BIC Cristal, most documents are linked to topic 1, while in ReMarkable 2 Pen, most documents are more varied linked to topic 1 and 2. 
-Let's now check the top terms for each topic in both corpora. This will help us to understand the topics better and see if they make sense.
+Based on the result above. in BIC Cristal, most documents are assigned to topic 2 for both positive and negative sentiment, while in ReMarkable 2 Pen, most documents are topic 2 for positive, and topic 1 for negative sentiment. This indicates that the topics are not evenly distributed across the documents.
 
 ``` {r topic model interpretation}
 #BIC Cristal
@@ -611,7 +610,8 @@ Based on model adjustment, no significant changes on the topics, so we can proce
 
 ```{r manual topic filtering BIC}
 dfm_tmp_bic <- quanteda::dfm_remove(dfm_bic, pattern = c("pen", "also", "pens",
-                                                 "just", "ballpoints","find", "Cristal","ballpoint","use","write","writing","bic","s","want","can"  ))
+                                                 "just", "ballpoints","find", "Cristal","ballpoint","use",
+                                                 "write","writing","bic","s","want","can"  ))
 
 textmodel_positive_bic_new <- seededlda::textmodel_lda(dfm_tmp_bic[ docvars(dfm_tmp_bic)$ave_sentiment >= 0, ], k = 2)
 textmodel_negative_bic_new <- seededlda::textmodel_lda(dfm_tmp_bic[ docvars(dfm_tmp_bic)$ave_sentiment < 0, ], k = 2)
@@ -696,7 +696,9 @@ Based on model adjustment, no significant changes on the topics, so we can proce
 
 ```{r manual topic filtering RM}
 dfm_tmp_RM <- quanteda::dfm_remove(dfm_RM, pattern = c("pen", "also", "pens",
-                                                 "just", "much","find", "lamy","rm","rm2","see","really","writing","s","want","can","pencil","stylus","nib","nibs","back","think","rm1","amazon","kindle", "t", "amp", "emr"))
+                                                 "just", "much","find", "lamy","rm","rm2","see","really","writing","s","want","can","
+                                                 pencil","stylus","nib","nibs","back","think",
+                                                 "rm1","amazon","kindle", "t", "amp", "emr"))
 
 textmodel_positive_RM_new <- seededlda::textmodel_lda(dfm_tmp_RM[ docvars(dfm_tmp_RM)$ave_sentiment >= 0, ], k = 2)
 textmodel_negative_RM_new <- seededlda::textmodel_lda(dfm_tmp_RM[ docvars(dfm_tmp_RM)$ave_sentiment < 0, ], k = 2)
