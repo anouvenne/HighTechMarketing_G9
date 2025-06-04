@@ -1,7 +1,10 @@
 ---
-title: "Text mining HTM"
-output: html_document
+title: "Group 9 - Text mining HTM"
 date: "2025-05-28"
+output:
+  html_document:
+    highlight: tango  # Use a color theme for syntax highlighting
+
 ---
 
 ## 1. INTRODUCTORY STEPS
