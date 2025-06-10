@@ -1,0 +1,1407 @@
+---
+title: "Group 9 - Text mining HTM"
+date: "2025-05-28"
+output:
+  html_document:
+    highlight: tango  # Use a color theme for syntax highlighting
+
+---
+
+## 1. INTRODUCTORY STEPS
+
+We first setup the necessary packages for our analysis.
+```{r setup}
+# Set the CRAN mirror:
+local({r <- getOption("repos")
+r["CRAN"] <- "https://cran.rstudio.com/"
+options(repos = r)})
+
+# Install the packages used in this tutorial:
+packages <- c("cld2", "quanteda", "seededlda", "sentimentr")
+
+for (i in packages) {
+    if(!require(i, character.only = TRUE)) {
+        install.packages(i, dependencies = TRUE)
+    }
+}
+```
+
+Then, we can load and read the two data sets, the first regarding the BIC Cristal and the second regarding the ReMarkable 2 pen.
+```{r  loading data}
+bic_cristal_reviews <- read.csv("bic_cristal_reddit2.csv")
+remarkable2_pen_reviews <- read.csv("remarkable2_pen_reddit2.csv")
+```
+
+```{r}
+library(wordcloud)
+library(RColorBrewer)
+library(dplyr)
+library(ggplot2)
+library(tidytext)
+library(quanteda)
+library(lubridate)
+library(scales)
+```
+
+## 2. DATA EXPLORATION AND PREPARATION
+
+At this point, we can start to explore, clean and prepare our two data sets, lets start by exploring their structure. First for the BIC Cristal data set.
+```{r explore structure of bic cristal}
+str(bic_cristal_reviews)
+```
+Then, for the ReMarkable 2 pen.
+```{r explore structure of remarkable 2 pen}
+str(remarkable2_pen_reviews)
+```
+
+Now, we need to check if the 'review_id' variable can be used as a UID for the different reviews in the data sets.
+```{r UID verification}
+length(unique(bic_cristal_reviews$review_id))
+length(unique(remarkable2_pen_reviews$review_id))
+```
+
+As we can observe, the length of the vector containing unique values of the 'review_id' variable doesn't match the number of observations in the data sets, this means that a quite big number of different reviews has the same 'review_id' value, thus, we need to create a different variable that can be used as a UID. To do so, since each row contains a unique document, in the following chunk we will use the 'rownames' function. Then, to ensure consistency in the data sets, we convert the UID to a character.
+```{r UID creation}
+bic_cristal_reviews$UID <- row.names(bic_cristal_reviews)
+remarkable2_pen_reviews$UID <- row.names(remarkable2_pen_reviews)
+
+# Convert UID to a character varable
+bic_cristal_reviews$UID <- as.character(bic_cristal_reviews$UID)
+remarkable2_pen_reviews$UID <- as.character(remarkable2_pen_reviews$UID)
+```
+
+Now, since we observed that the variable 'review_id' is not useful to identify the reviews, we can remove it from both data sets. Then, we move the 'UID' column as the first one.
+```{r review_id  removal}
+# Remove 'review_id' column from both datasets
+bic_cristal_reviews$review_id <- NULL
+remarkable2_pen_reviews$review_id <- NULL
+
+# Reorder columns to move 'UID' to the first position
+bic_cristal_reviews <- bic_cristal_reviews[, c("UID", setdiff(names(bic_cristal_reviews), "UID"))]
+remarkable2_pen_reviews <- remarkable2_pen_reviews[, c("UID", setdiff(names(remarkable2_pen_reviews), "UID"))]
+
+# Confirm removal and column order
+names(bic_cristal_reviews)
+names(remarkable2_pen_reviews)
+```
+
+At this point, we remove observations for which the 'review' variable contains a missing value (if there's any).
+```{r}
+bic_cristal_reviews <- bic_cristal_reviews[ !is.na(bic_cristal_reviews$review), ]
+remarkable2_pen_reviews <- remarkable2_pen_reviews[ !is.na(remarkable2_pen_reviews$review), ]
+```
+
+Moreover, since for sentiment analysis the tools are language specific, we verify that all reviews are in English, and, if they are not, we remove the ones written in other languages
+```{r assign language}
+# For the BIC Cristal
+bic_cristal_reviews$language <- cld2::detect_language(bic_cristal_reviews$review)
+head(cbind(table(bic_cristal_reviews$language)), 20)
+
+# For the ReMarkable 2 pen
+remarkable2_pen_reviews$language <- cld2::detect_language(remarkable2_pen_reviews$review)
+head(cbind(table(remarkable2_pen_reviews$language)), 20)
+```
+
+As we can see, all reviews seem to be written in English, but for the BIC data set, it looks like 6 out of the 185 reviews cannot be classified, probably because they contain elements that disturb the functioning of the 'cld2' function (e.g. numeric values, symbols,..), furthermore, false negatives might exist.
+
+Now, we remove (if there's any) the characters that are not in the standard ASCII range. This cleans the texts of the reviews and makes them more suitable to be elaborated by a computer. We start by marking those reviews that contain non-ASCII characters, then, if needed, we find-and-replace those characters with ones that are in the ASCII range.
+```{r non_ascii}
+# BIC Cristal
+bic_cristal_reviews$non_ascii <- grepl("[^\x01-\x7F]", bic_cristal_reviews$review) # Mark reviews of interest  
+bic_cristal_reviews[ which(bic_cristal_reviews$non_ascii %in% TRUE)[30], ]$review
+
+# ReMarkable 2 pen
+remarkable2_pen_reviews$non_ascii <- grepl("[^\x01-\x7F]", remarkable2_pen_reviews$review) # Mark reviews of interest  
+remarkable2_pen_reviews[ which(remarkable2_pen_reviews$non_ascii %in% TRUE)[30], ]$review
+```
+
+As we can see, there's no reviews that contain non-ASCII characters.
+
+## 3. MODEL PREPARATION
+
+The first step is creating corpus for both data set, BIC Cristal and ReMarkable 2 pen. A corpus is a collection of texts that we can analyze. In this case, we will create a corpus for each data set using the 'quanteda' package. We will use the 'UID' variable as the document identifier and the 'review' variable as the text field.
+```{r creation of corpus}
+#BIC Cristal
+corpusbic <- quanteda::corpus(bic_cristal_reviews, 
+                           docid_field = "UID",
+                           text_field = "review")
+
+summary(corpusbic, 10)
+
+#Remarkable 2 Pen
+corpusRM <- quanteda::corpus(remarkable2_pen_reviews, 
+                           docid_field = "UID",
+                           text_field = "review")
+
+summary(corpusRM, 10)
+```
+To check our corpus, we can randomly draw a review from each corpus and print it.
+```{r corpus random draw}
+as.character(corpusbic[ sample(length(corpusbic), 1) ])
+as.character(corpusRM[ sample(length(corpusRM), 1) ])
+```
+Now, we can proceed to the sentiment analysis. We will use the 'sentimentr' package to calculate the sentiment scores for each review in both corpora. The sentiment scores will be stored in a new variable called 'ave_sentiment' in the document variables of each corpus. Furthermore, a subjectivity score is introduced (ranging from [0,1]) to the determine how subjective is the review, with a value close to zero indicating high objectivity and a value close to one indicating high subjectivity.
+```{r sentriment analysis}
+library(sentimentr)
+
+# Enhanced sentiment analysis
+analyze_sentiment <- function(corpus) {
+    sentences <- get_sentences(as.character(corpus))
+    sentiment <- sentiment_by(sentences)
+    
+    # Robust subjectivity calculation with diagnostics
+    subjectivity <- lapply(sentences, function(x) {
+        tryCatch({
+            sentiment_detail <- sentimentr::sentiment(get_sentences(x))
+            
+            # Handle empty results
+            if (nrow(sentiment_detail) == 0) return(0)
+            
+            # Calculate true subjectivity
+            abs_weight_sum <- sum(abs(sentiment_detail$sentiment), na.rm = TRUE)
+            word_count <- sum(sentiment_detail$word_count, na.rm = TRUE)
+            
+            # Prevent division by zero
+            if (word_count == 0) return(0)
+            
+            subjectivity_score <- abs_weight_sum / word_count
+            
+            # Apply boost for opinion indicators
+            opinion_indicators <- c("think", "believe", "feel", "opinion", "seem", "appear")
+            if (any(opinion_indicators %in% unlist(get_sentences(x)))) {
+                subjectivity_score <- min(1, subjectivity_score * 1.5)
+            }
+            
+            return(subjectivity_score)
+        }, error = function(e) {
+            message("Error processing: ", x)
+            0  # Return 0 on error
+        })
+    })
+    
+    subjectivity <- unlist(subjectivity)
+    
+    # Apply non-linear scaling to enhance differentiation
+    scaled_subjectivity <- subjectivity^0.5  # Square root scaling
+    
+    return(list(sentiment = sentiment, subjectivity = scaled_subjectivity))
+}
+
+# BIC Cristal Sentiment + Subjectivity
+bic_analysis <- analyze_sentiment(corpusbic)
+docvars(corpusbic, field = "ave_sentiment") <- bic_analysis$sentiment$ave_sentiment
+docvars(corpusbic, field = "subjectivity") <- bic_analysis$subjectivity
+
+# Remarkable 2 Pen Sentiment + Subjectivity
+rm_analysis <- analyze_sentiment(corpusRM)
+docvars(corpusRM, field = "ave_sentiment") <- rm_analysis$sentiment$ave_sentiment
+docvars(corpusRM, field = "subjectivity") <- rm_analysis$subjectivity
+
+# Add to original data frames
+bic_cristal_reviews$polarity <- bic_analysis$sentiment$ave_sentiment
+bic_cristal_reviews$subjectivity <- bic_analysis$subjectivity
+remarkable2_pen_reviews$polarity <- rm_analysis$sentiment$ave_sentiment
+remarkable2_pen_reviews$subjectivity <- rm_analysis$subjectivity
+
+# Handle any remaining NAs (shouldn't occur, but safeguard)
+bic_cristal_reviews$subjectivity[is.na(bic_cristal_reviews$subjectivity)] <- 0
+remarkable2_pen_reviews$subjectivity[is.na(remarkable2_pen_reviews$subjectivity)] <- 0
+```
+
+Now we can verify this sentiment analysis, this is achieved in the following chunk.
+```{r}
+# Verify new columns
+cat("BIC Cristal columns:", names(bic_cristal_reviews), "\n")
+cat("ReMarkable 2 Pen columns:", names(remarkable2_pen_reviews), "\n")
+
+# Summary of new metrics
+cat("\nBIC Cristal Sentiment & Subjectivity:\n")
+print(summary(bic_cristal_reviews[, c("polarity", "subjectivity")]))
+
+cat("\nReMarkable 2 Pen Sentiment & Subjectivity:\n")
+print(summary(remarkable2_pen_reviews[, c("polarity", "subjectivity")]))
+
+# Plot distributions
+par(mfrow = c(2, 2))
+hist(bic_cristal_reviews$polarity, main = "BIC Polarity", xlab = "Sentiment", col = "lightblue")
+hist(bic_cristal_reviews$subjectivity, main = "BIC Subjectivity", xlab = "Subjectivity", col = "lightgreen")
+hist(remarkable2_pen_reviews$polarity, main = "ReMarkable Polarity", xlab = "Sentiment", col = "lightblue")
+hist(remarkable2_pen_reviews$subjectivity, main = "ReMarkable Subjectivity", xlab = "Subjectivity", col = "lightgreen")
+par(mfrow = c(1, 1))
+```
+
+As we can see, BIC Cristal reviews are more objective, on average, compared to ReMarkable pen reviews.
+Then, we can also check if the length of the sentiment scores (polarity and subjectivity) matches the number of documents in each corpus. 
+```{r length check}
+# Verify sentiment vector lengths
+cat("BIC Cristal Sentiment Verification:\n")
+cat(" - Corpus documents:", ndoc(corpusbic), "\n")
+cat(" - Sentiment vector in corpus:", length(docvars(corpusbic, "ave_sentiment")), "\n")
+cat(" - Polarity in data frame:", length(bic_cristal_reviews$polarity), "\n")
+
+cat("\nReMarkable 2 Pen Sentiment Verification:\n")
+cat(" - Corpus documents:", ndoc(corpusRM), "\n")
+cat(" - Sentiment vector in corpus:", length(docvars(corpusRM, "ave_sentiment")), "\n")
+cat(" - Polarity in data frame:", length(remarkable2_pen_reviews$polarity), "\n")
+
+# Proper equality checks
+bic_sent_ok <- length(docvars(corpusbic, "ave_sentiment")) == ndoc(corpusbic)
+rm_sent_ok <- length(docvars(corpusRM, "ave_sentiment")) == ndoc(corpusRM)
+
+cat("\nResults:\n")
+cat("BIC sentiment length matches documents:", bic_sent_ok, "\n")
+cat("ReMarkable sentiment length matches documents:", rm_sent_ok, "\n")
+```
+The results are TRUE, meaning that the sentiment scores have been successfully calculated and stored in the document variables of each corpus.
+
+As we can see, BIC Cristal has a skewed right histogram, indicating tendency for positive sentiment. While Remarkable 2 Pen has a more balanced distribution, with a slight tendency for positive sentiment as well.
+
+Let's explore the sentiment scores further by checking the minimum and maximum values, as well as the mean and median.
+```{r}
+#BIC Cristal
+summary(quanteda::docvars(corpusbic)$ave_sentiment)
+#Remarkable 2 Pen
+summary(quanteda::docvars(corpusRM)$ave_sentiment)
+```
+The value indicates that sentiment for both are positive, Let's explore sentiments with other method.
+```{r explore sentiments}
+#BIC Cristal
+as.character(corpusbic[ which(quanteda::docvars(corpusbic)$ave_sentiment == summary(quanteda::docvars(corpusbic)$ave_sentiment)[3]), ])
+as.character(corpusbic[ which(quanteda::docvars(corpusbic)$ave_sentiment == summary(quanteda::docvars(corpusbic)$ave_sentiment)[5]), ])
+#Remarkable 2 Pen
+as.character(corpusRM[ which(quanteda::docvars(corpusRM)$ave_sentiment == summary(quanteda::docvars(corpusRM)$ave_sentiment)[1]), ])
+as.character(corpusRM[ which(quanteda::docvars(corpusRM)$ave_sentiment == summary(quanteda::docvars(corpusRM)$ave_sentiment)[5]), ])
+
+```
+Now, we can proceed to the feature extraction step. We will tokenize the text in each corpus, which means breaking it down into individual words or tokens. We will also remove punctuation, symbols, numbers, URLs, and stopwords from the tokens. Then, we will create a document-feature matrix (DFM) for each corpus.
+```{r feature tokenization}
+#BIC Cristal
+tokens_bic <- quanteda::tokens(corpusbic, 
+                           what = "word", # change the keyword
+                           remove_punct = TRUE,
+                           remove_symbols = TRUE,
+                           remove_numbers = TRUE,
+                           remove_url = TRUE,
+                           remove_separators = TRUE,
+                           split_hyphens = FALSE,
+                           split_tags = FALSE,
+                           include_docvars = TRUE,
+                           padding = FALSE,
+                           verbose = TRUE)
+#Remarkable 2 Pen
+tokens_RM <- quanteda::tokens(corpusRM, 
+                           what = "word", # change the keyword
+                           remove_punct = TRUE,
+                           remove_symbols = TRUE,
+                           remove_numbers = TRUE,
+                           remove_url = TRUE,
+                           remove_separators = TRUE,
+                           split_hyphens = FALSE,
+                           split_tags = FALSE,
+                           include_docvars = TRUE,
+                           padding = FALSE,
+                           verbose = TRUE)
+```
+
+The `tokens()` function takes a corpus as its input, cleans each document and generates a vector of processed words per document. We can explore the resulting `tokens` object, for example, by sampling one of its elements:
+```{r tokens sample}
+tokens_bic[ sample(length(tokens_bic), 1) ]
+tokens_RM[ sample(length(tokens_RM), 1) ]
+```
+
+We now have vectors per review that contain the extracted and preprocessed words per review.
+Next, we can explore the tokens in each corpus. We can check the first few tokens in each corpus. We can check certain keywords in context, for example, the word "nice" in the BIC Cristal corpus. Also keywords in context for the ReMarkable 2 pen corpus, for example, the word "good". We can also convert the tokens to lowercase to ensure consistency in the analysis.
+```{r keywords in context}
+#BIC Cristal
+data.frame(quanteda::kwic(tokens_bic, pattern = "nice"))[ c(1:5), c(4:6) ] #Change the word nice
+tokens_bic <- quanteda::tokens_tolower(tokens_bic)
+#Remarkable 2 Pen
+data.frame(quanteda::kwic(tokens_RM, pattern = "good"))[ c(1:5), c(4:6) ] #Change the word good
+tokens_RM <- quanteda::tokens_tolower(tokens_RM)
+```
+
+Now, we can remove stopwords from the tokens. Stopwords are common words that do not carry much meaning, such as "the", "and", "is", etc. We will use the English stopwords list provided by the `quanteda` package.
+```{r explore stopwords}
+#BIC Cristal
+quanteda::stopwords("en")
+tokens_bic <- quanteda::tokens_remove(tokens_bic, pattern = stopwords("en"))
+#Remarkable 2 Pen
+quanteda::stopwords("en")
+tokens_RM <- quanteda::tokens_remove(tokens_RM, pattern = stopwords("en"))
+```
+
+We have removed the stopwords from the tokens, now, before creating dfm for each corpus, we can do lemmatization. In this way, we are able to reduce words to their basic form while considering their meaning based on their part in the speech. To do so, we first install the required packages.
+```{r}
+# Install additional required packages
+packages <- c(packages, "textstem", "lexicon")  # Add new packages
+for (i in packages) {
+    if(!require(i, character.only = TRUE)) {
+        install.packages(i, dependencies = TRUE)
+    }
+}
+library(textstem)
+```
+
+Now we can actually do lemmization.
+```{r}
+# Function to lemmatize tokens while preserving POS context
+lemmatize_tokens <- function(tokens) {
+    # Convert tokens to list for processing
+    token_list <- as.list(tokens)
+    
+    # Lemmatize each document
+    lemmatized <- lapply(token_list, function(x) {
+        if (length(x) == 0) return(x)  # Handle empty documents
+        lemmas <- textstem::lemmatize_words(x, dictionary = lexicon::hash_lemmas)
+        return(lemmas)
+    })
+    
+    # Convert back to tokens object
+    new_tokens <- quanteda::as.tokens(lemmatized)
+    quanteda::docvars(new_tokens) <- quanteda::docvars(tokens)
+    return(new_tokens)
+}
+
+# Create copies of tokens before lemmatization
+tokens_bic_orig <- tokens_bic
+tokens_RM_orig <- tokens_RM
+
+# Apply lemmatization to both token sets
+tokens_bic <- lemmatize_tokens(tokens_bic)
+tokens_RM <- lemmatize_tokens(tokens_RM)
+```
+
+Now we add a verification step to check results.
+```{r}
+# Check lemmatization package functionality
+cat("\nLEMMATIZATION PACKAGE CHECK:\n")
+test_words <- c("running", "ran", "runs", "better", "best", "is", "was")
+test_lemmas <- textstem::lemmatize_words(test_words, dictionary = lexicon::hash_lemmas)
+data.frame(Word = test_words, Lemma = test_lemmas)
+```
+It works as desired.
+Now, we create two new data sets, one for each product, containing the cleaned reviews resulting from this previous section; each data set will contain 6 columns: 
+```{r}
+library(dplyr)
+library(tibble)
+
+# Reconstruct cleaned (lemmatized) sentences from token lists
+cleaned_bic <- sapply(tokens_bic, paste, collapse = " ")
+cleaned_rm  <- sapply(tokens_RM,  paste, collapse = " ")
+
+# Create analysis data set for BIC Cristal
+bic_reviews_cleaned <- tibble(
+  UID = paste0("BIC_", seq_along(cleaned_bic)),
+  Date = bic_cristal_reviews$date,
+  Old_Comment = bic_cristal_reviews$review,
+  Cleaned_Comment = cleaned_bic,
+  `Polarity score` = bic_cristal_reviews$polarity,
+  `Subjectivity score` = bic_cristal_reviews$subjectivity
+)
+
+# Create analysis data set for ReMarkable 2 Pen
+rm_reviews_cleaned <- tibble(
+  UID = paste0("RM_", seq_along(cleaned_rm)),
+  Date = remarkable2_pen_reviews$date,
+  Old_Comment = remarkable2_pen_reviews$review,
+  Cleaned_Comment = cleaned_rm,
+  `Polarity score` = remarkable2_pen_reviews$polarity,
+  `Subjectivity score` = remarkable2_pen_reviews$subjectivity
+)
+
+# Save as csv
+write.csv(bic_reviews_cleaned, "bic_cristal_cleaned_data.csv", row.names = FALSE)
+write.csv(rm_reviews_cleaned, "remarkable_pen_cleaned_data.csv", row.names = FALSE)
+```
+
+Let's look at the first observations of these new data sets.
+```{r}
+head(bic_reviews_cleaned)
+head(rm_reviews_cleaned)
+```
+
+Now we can proceed with the document-feature matrix creation. A document-feature matrix (DFM) is a matrix that represents the frequency of each word (feature) in each document. We will use the `quanteda` package to create the DFM.
+```{r dfm creation}
+#BIC Cristal
+dfm_bic <- quanteda::dfm(tokens_bic)
+dfm_bic
+topfeatures(dfm_bic)
+#Remarkable 2 Pen
+dfm_RM <- quanteda::dfm(tokens_RM)
+dfm_RM
+topfeatures(dfm_RM)
+```
+
+Next we will perform cleaning, but firstly we will check the length of the tokens in each corpus. This will help us to identify any tokens that are too short, which might not be useful for our analysis.
+```{r filter token length, echo=TRUE}
+#BIC Cristal
+length_features_bic <- data.frame(count = quanteda::topfeatures(dfm_bic, ncol(dfm_bic))) # create data frame 
+length_features_bic$length <- nchar(rownames(length_features_bic)) # extract token length
+length_features_bic[ which(length_features_bic$length %in% c(1, 2)), ] # filter on token length
+
+
+#Remarkable 2 Pen
+length_features_RM <- data.frame(count = quanteda::topfeatures(dfm_RM, ncol(dfm_RM))) # create data frame
+length_features_RM$length <- nchar(rownames(length_features_RM)) # extract token length
+length_features_RM[ which(length_features_RM$length %in% c(1, 2)), ] # filter on token length
+
+
+
+```
+
+
+Based on the result above on both BIC Cristal and Remarkable 2 Pen, we can see that there are no significant concerns, so we can proceed to the next step.
+
+Now we create wordcloud for both brands
+```{r wordcloud}
+
+#BIC Cristal
+# Create a term frequency table
+freq <- colSums(dfm_bic)
+freq <- sort(freq, decreasing = TRUE)
+
+# Basic word cloud
+wordcloud(words = names(freq), freq = freq, min.freq = 5,
+          max.words = 100, random.order = FALSE,
+          colors = brewer.pal(8, "Dark2"))
+#Remarkable 2 Pen
+# Create a term frequency table
+freq <- colSums(dfm_RM)
+freq <- sort(freq, decreasing = TRUE)
+
+# Basic word cloud
+wordcloud(words = names(freq), freq = freq, min.freq = 5,
+          max.words = 100, random.order = FALSE,
+          colors = brewer.pal(8, "Dark2"))
+```
+
+
+## 4. TOPIC MODELING
+
+We can now proceed to the topic modeling step. Topic modeling is a technique used to discover the underlying topics in a collection of documents. We will use the `seededlda` package to perform topic modeling on both corpora.
+```{r topic modelling}
+# BIC Cristal Topic Modeling
+textmodel_positive_bic <- seededlda::textmodel_lda(dfm_bic[ docvars(dfm_bic)$ave_sentiment >= 0, ], k = 2)
+textmodel_negative_bic <- seededlda::textmodel_lda(dfm_bic[ docvars(dfm_bic)$ave_sentiment < 0, ], k = 2)
+# ReMarkable 2 Pen Topic Modeling
+textmodel_positive_rm <- seededlda::textmodel_lda(dfm_RM[ docvars(dfm_RM)$ave_sentiment >= 0, ], k = 2)
+textmodel_negative_rm <- seededlda::textmodel_lda(dfm_RM[ docvars(dfm_RM)$ave_sentiment < 0, ], k = 2)
+```
+
+## 5. INTERPRETATION AND EVALUATION
+We can now interpret the results of the topic modeling. We can check the top terms for each topic in both corpora.
+```{r document distribution}
+#BIC Cristal
+head(topics(textmodel_positive_bic))
+head(topics(textmodel_negative_bic))
+table(topics(textmodel_positive_bic))
+table(topics(textmodel_negative_bic))
+#Remarkable 2 Pen
+head(topics(textmodel_positive_rm))
+head(topics(textmodel_negative_rm))
+table(topics(textmodel_positive_rm))
+table(topics(textmodel_negative_rm))
+```
+Based on the result above. in BIC Cristal, most documents are assigned to topic 2 for both positive and negative sentiment, while in ReMarkable 2 Pen, most documents are topic 2 for positive, and topic 1 for negative sentiment. This indicates that the topics are not evenly distributed across the documents.
+
+``` {r topic model interpretation}
+#BIC Cristal
+cbind(seededlda::terms(textmodel_positive_bic, 10), 
+      seededlda::terms(textmodel_negative_bic, 10))
+#Remarkable 2 Pen
+cbind(seededlda::terms(textmodel_positive_rm, 10), 
+      seededlda::terms(textmodel_negative_rm, 10))
+```
+```{r}
+
+# Get topic distribution for each document
+topic_bic_pos <- data.frame(
+  topic = topics(textmodel_positive_bic),
+  sentiment = "Positive",
+  brand = "BIC Cristal"
+)
+
+topic_bic_neg <- data.frame(
+  topic = topics(textmodel_negative_bic),
+  sentiment = "Negative",
+  brand = "BIC Cristal"
+)
+
+topic_rm_pos <- data.frame(
+  topic = topics(textmodel_positive_rm),
+  sentiment = "Positive",
+  brand = "Remarkable 2"
+)
+
+topic_rm_neg <- data.frame(
+  topic = topics(textmodel_negative_rm),
+  sentiment = "Negative",
+  brand = "Remarkable 2"
+)
+# Combine all topic data
+topic_all <- bind_rows(topic_bic_pos, topic_bic_neg, topic_rm_pos, topic_rm_neg)
+topic_dist <- topic_all %>%
+  group_by(brand, sentiment, topic) %>%
+  summarise(doc_count = n(), .groups = "drop")
+#plot
+ggplot(topic_dist, aes(x = factor(topic), y = doc_count, fill = sentiment)) +
+  geom_col(position = "dodge") +
+  facet_wrap(~ brand) +
+  labs(title = "Topic Distribution per Brand",
+       x = "Topic", y = "Number of Documents") +
+  theme_minimal() +
+  scale_fill_brewer(palette = "Set1")
+
+```
+
+
+The first two column represent the positive sentiment, while the others are negative sentiment. As we can wee here, the topics in BIC Cristal are related to the quality of the pen, its price, and its availability. While in ReMarkable 2 Pen, the topics are related to the quality of the pen, its price, and its usability. But we notice there are words that might be not meaningful in understanding the customers review such as pen, pens, cristal, etc. We will improve the model performance
+
+## 6. MODEL IMPROVEMENT
+First, removing short review
+
+```{r remove short reviews}
+# BIC Cristal
+## Remove documents that contain less than 1 words, I tried for 5, it removes everything
+tokens_bic_new <- tokens_bic[ quanteda::ntoken(tokens_bic) >= 2 ]
+
+## Prepare the new dfm (this integrates some of the previous steps)
+dfm_bic <- quanteda::dfm(tokens_bic_new)
+#dfm_bic <- dfm_trim(dfm, min_termfreq = 3)
+#dfm_bic <- dfm[ -which((rowSums(dfm)) %in% 0), ]
+## Run the new textmodels
+textmodel_positive_bic_new <- seededlda::textmodel_lda(dfm_bic[ docvars(dfm_bic)$ave_sentiment >= 0, ], k = 2)
+textmodel_negative_bic_new <- seededlda::textmodel_lda(dfm_bic[ docvars(dfm_bic)$ave_sentiment < 0, ], k = 2)
+
+## Explore the topics
+cbind(seededlda::terms(textmodel_positive_bic_new), 
+      seededlda::terms(textmodel_negative_bic_new))
+
+# ReMarkable 2 Pen
+## Remove documents that contain less than 2 words
+tokens_RM_new <- tokens_RM[ quanteda::ntoken(tokens_RM) >= 2 ]
+## Prepare the new dfm (this integrates some of the previous steps)
+dfm_RM <- quanteda::dfm(tokens_RM_new)
+#dfm_RM <- dfm_trim(dfm_RM, min_termfreq = 10)
+#dfm_RM <- dfm_RM[ -which((rowSums(dfm_RM)) %in% 0), ]
+## Run the new textmodels
+textmodel_positive_RM_new <- seededlda::textmodel_lda(dfm_RM[ docvars(dfm_RM)$ave_sentiment >= 0, ], k = 2)
+textmodel_negative_RM_new <- seededlda::textmodel_lda(dfm_RM[ docvars(dfm_RM)$ave_sentiment < 0, ], k = 2)
+
+## Explore the topics
+cbind(seededlda::terms(textmodel_positive_RM_new), 
+      seededlda::terms(textmodel_negative_RM_new))
+```
+Trying model adjustment
+First, let's check the BIC Cristal model, we will try to adjust the model by changing the number of topics and the parameters of the LDA model. We will also check if the topics make sense and if they are interpretable.
+
+### BIC Cristal
+```{r model adjustments BIC}
+##BIC Cristal
+textmodel_positive_bic_new <- seededlda::textmodel_lda(dfm_bic[ docvars(dfm_bic)$ave_sentiment >= 0, ],
+                                                   k = 2,
+                                                   max_iter = 1000,
+                                                   alpha = 0.5,
+                                                   beta = 0.05) 
+textmodel_negative_bic_new <- seededlda::textmodel_lda(dfm_bic[ docvars(dfm_bic)$ave_sentiment < 0, ],
+                                                   k = 2,
+                                                   max_iter = 1000,
+                                                   alpha = 0.5,
+                                                   beta = 0.05)
+cbind(seededlda::terms(textmodel_positive_bic_new), 
+      seededlda::terms(textmodel_negative_bic_new))
+```
+
+Based on model adjustment, no significant changes on the topics, so we can proceed to the next step.Notice, there are still words that are not relevant in understanding the customers review such as pen, pens, cristal, etc. We will improve the model performance by removing those words.
+
+```{r manual topic filtering BIC}
+dfm_tmp_bic <- quanteda::dfm_remove(dfm_bic, pattern = c("pen", "also", "pens",
+                                                 "just", "ballpoints","find", "Cristal","ballpoint","use",
+                                                 "write","writing","bic","s","want","can"  ))
+
+textmodel_positive_bic_new <- seededlda::textmodel_lda(dfm_tmp_bic[ docvars(dfm_tmp_bic)$ave_sentiment >= 0, ], k = 2)
+textmodel_negative_bic_new <- seededlda::textmodel_lda(dfm_tmp_bic[ docvars(dfm_tmp_bic)$ave_sentiment < 0, ], k = 2)
+cbind(terms(textmodel_positive_bic_new), terms(textmodel_negative_bic_new))
+```
+```{r}
+
+# Extract top words per topic
+positive_terms_bic <- terms(textmodel_positive_bic_new, 15)
+negative_terms_bic <- terms(textmodel_negative_bic_new, 15)
+
+# Convert matrices into data frames
+positive_df_bic <- data.frame(
+  word = as.vector(positive_terms_bic),
+  topic = rep(1:ncol(positive_terms_bic), each = nrow(positive_terms_bic)),
+  sentiment = "Positive"
+)
+
+negative_df_bic <- data.frame(
+  word = as.vector(negative_terms_bic),
+  topic = rep(1:ncol(negative_terms_bic), each = nrow(negative_terms_bic)),
+  sentiment = "Negative"
+)
+
+# Combine positive & negative topics
+topics_combined_bic <- bind_rows(positive_df_bic, negative_df_bic)
+
+# Count occurrences of words per topic
+word_counts_bic <- topics_combined_bic %>%
+  group_by(topic, word, sentiment) %>%
+  summarise(count = n(), .groups = "drop")
+
+# Plot: sorted within each facet, to understand word and sentiment mapping
+ggplot(word_counts_bic, aes(x = reorder_within(word, count, topic), y = count, fill = sentiment)) +
+  geom_col(show.legend = TRUE) +
+  facet_wrap(~ topic + sentiment, scales = "free_y") +
+  coord_flip() +
+  scale_x_reordered() +  # Needed to handle reordered_within
+  labs(title = "Top Words per Topic and Sentiment",
+       x = "Word", y = "Sentiment") +
+    theme_minimal()
+ggsave("top_words_per_topic_and_sentiment.png", width = 10, height = 42, limitsize = FALSE)
+
+
+```
+
+
+
+```{r}
+
+
+# Create a term frequency table
+freq <- colSums(dfm_tmp_bic)
+freq <- sort(freq, decreasing = TRUE)
+
+# Basic word cloud
+wordcloud(words = names(freq), freq = freq, min.freq = 5,
+          max.words = 50, random.order = FALSE,
+          colors = brewer.pal(8, "Dark2"),
+          scale = c(4, 0.8))
+```
+<br> Now, we can check the ReMarkable 2 pen model, we will try to adjust the model by changing the number of topics and the parameters of the LDA model. We will also check if the topics make sense and if they are interpretable.
+
+### Remarkable 2 Pen
+```{r model adjustments RM}
+##Remarkable 2 Pen
+textmodel_positive_RM_new <- seededlda::textmodel_lda(dfm_RM[ docvars(dfm_RM)$ave_sentiment >= 0, ],
+                                                   k = 2,
+                                                   max_iter = 1000,
+                                                   alpha = 0.5,
+                                                   beta = 0.05) 
+textmodel_negative_RM_new <- seededlda::textmodel_lda(dfm_RM[ docvars(dfm_RM)$ave_sentiment < 0, ],
+                                                   k = 2,
+                                                   max_iter = 1000,
+                                                   alpha = 0.5,
+                                                   beta = 0.05)
+cbind(seededlda::terms(textmodel_positive_RM_new), 
+      seededlda::terms(textmodel_negative_RM_new))
+```
+
+Based on model adjustment, no significant changes on the topics, so we can proceed to the next step. Notice, there are still words that are not relevant in understanding the customers review such as pen, pens, remarkable, etc. We will improve the model performance by removing those words.
+
+```{r manual topic filtering RM}
+dfm_tmp_RM <- quanteda::dfm_remove(dfm_RM, pattern = c("pen", "also", "pens",
+                                                 "just", "much","find", "lamy","rm","rm2","see","really","writing","s","want","can","
+                                                 pencil","stylus","nib","nibs","back","think",
+                                                 "rm1","amazon","kindle", "t", "amp", "emr"))
+
+textmodel_positive_RM_new <- seededlda::textmodel_lda(dfm_tmp_RM[ docvars(dfm_tmp_RM)$ave_sentiment >= 0, ], k = 2)
+textmodel_negative_RM_new <- seededlda::textmodel_lda(dfm_tmp_RM[ docvars(dfm_tmp_RM)$ave_sentiment < 0, ], k = 2)
+cbind(terms(textmodel_positive_RM_new), terms(textmodel_negative_RM_new))
+```
+```{r}
+
+
+# Extract top words per topic
+positive_terms_RM <- terms(textmodel_positive_RM_new, 10)
+negative_terms_RM <- terms(textmodel_negative_RM_new, 10)
+
+# Convert matrices into data frames
+positive_df_RM <- data.frame(
+  word = as.vector(positive_terms_RM),
+  topic = rep(1:ncol(positive_terms_RM), each = nrow(positive_terms_RM)),
+  sentiment = "Positive"
+)
+
+negative_df_RM <- data.frame(
+  word = as.vector(negative_terms_RM),
+  topic = rep(1:ncol(negative_terms_RM), each = nrow(negative_terms_RM)),
+  sentiment = "Negative"
+)
+
+# Combine positive & negative topics
+topics_combined_RM <- bind_rows(positive_df_RM, negative_df_RM)
+
+# Count occurrences of words per topic
+word_counts_RM <- topics_combined_RM %>%
+  group_by(topic, word, sentiment) %>%
+  summarise(count = n(), .groups = "drop")
+
+# Plot: sorted within each facet
+ggplot(word_counts_RM, aes(x = reorder_within(word, count, topic), y = count, fill = sentiment)) +
+  geom_col(show.legend = TRUE) +
+  facet_wrap(~ topic + sentiment, scales = "free_y") +
+  coord_flip() +
+  scale_x_reordered() +  # Needed to handle reordered_within
+  labs(title = "Top Words per Topic and Sentiment",
+       x = "Word", y = "Sentiment") +
+  theme_minimal()
+ggsave("top_words_per_topic_and_sentiment.png", width = 10, height = 42, limitsize = FALSE)
+
+```
+
+
+```{r}
+
+
+# Create a term frequency table
+freq <- colSums(dfm_tmp_RM)
+freq <- sort(freq, decreasing = TRUE)
+
+# Basic word cloud
+wordcloud(words = names(freq), freq = freq, min.freq = 5,
+          max.words = 50, random.order = FALSE,
+          colors = brewer.pal(8, "Dark2"),
+          scale = c(4, 0.8))
+```
+<br>
+
+## 7. REVALIDATION 
+<br>
+
+
+Now let's do revalidation.
+we use function of `compute_coherence` to compute the coherence of the topics. Coherence is a measure of how semantically related the words in a topic are. Higher coherence scores indicate that the words in a topic are more related to each other, which is generally desirable in topic modeling.
+
+### BIC Cristal
+
+```{r}
+#Remarkable 2 Pen
+
+
+compute_coherence_bic <- function(topic_terms, dfm_bic) {
+  coherence_bic <- 0
+  for (i in 2:length(topic_terms)) {
+    for (j in 1:(i - 1)) {
+      term_i <- topic_terms[i]
+      term_j <- topic_terms[j]
+      
+      # Check if both terms exist in the dfm
+      if (term_i %in% colnames(dfm_bic) && term_j %in% colnames(dfm_bic)) {
+        # D(term_i and term_j)
+        D_wi_wj <- sum(dfm_bic[, term_i] > 0 & dfm_bic[, term_j] > 0)
+        # D(term_j)
+        D_wj    <- sum(dfm_bic[, term_j] > 0)
+        
+        # Add smoothing +1 to avoid log(0)
+        coherence_bic <- coherence_bic + log((D_wi_wj + 1) / (D_wj + 1))
+      }
+    }
+  }
+  return(coherence_bic)
+}
+
+```
+
+
+```{r}
+#Remarkable 2 Pen
+# Get topic terms
+top_terms_pos_bic <- terms(textmodel_positive_bic_new, 10)
+top_terms_neg_bic <- terms(textmodel_negative_bic_new, 10)
+
+# Filter dfms
+dfm_pos_bic <- dfm_tmp_bic[docvars(dfm_tmp_bic)$ave_sentiment >= 0, ]
+dfm_neg_bic <- dfm_tmp_bic[docvars(dfm_tmp_bic)$ave_sentiment < 0, ]
+
+# Compute coherence per topic
+coherence_scores_pos_bic <- apply(top_terms_pos_bic, 2, function(term_set) {
+  compute_coherence_bic(term_set, dfm_pos_bic)
+})
+
+coherence_scores_neg_bic <- apply(top_terms_neg_bic, 2, function(term_set) {
+  compute_coherence_bic(term_set, dfm_neg_bic)
+})
+
+# Show mean coherence
+cat("Mean coherence (Positive Model):", round(mean(coherence_scores_pos_bic), 3), "\n")
+cat("Mean coherence (Negative Model):", round(mean(coherence_scores_neg_bic), 3), "\n")
+
+# Optional: topic-wise scores
+coherence_scores_pos_bic
+coherence_scores_neg_bic
+
+
+```
+**Wordcloud for BIC Cristal**
+
+```{r}
+
+# Extract top terms from each topic in positive model
+top_terms_pos_bic <- terms(textmodel_positive_bic_new, 50)
+
+# Extract top terms from each topic in negative model
+top_terms_neg_bic <- terms(textmodel_negative_bic_new, 50)
+
+# Create a list of all topic terms combined with labels
+topic_terms_list_bic <- list()
+
+for(i in 1:2) {
+  topic_terms_list_bic[[paste0("pos_topic", i)]] <- top_terms_pos_bic[, i]
+  topic_terms_list_bic[[paste0("neg_topic", i)]] <- top_terms_neg_bic[, i]
+}
+
+# Build a dfm with counts of these topic terms in the full filtered dfm
+topic_term_freqs_bic <- lapply(topic_terms_list_bic, function(terms_vec) {
+  colSums(dfm_tmp_bic[, intersect(terms_vec, featnames(dfm_tmp_bic))])
+})
+
+# Turn into a matrix with topics as rows, terms as columns
+topic_term_matrix_bic <- do.call(rbind, lapply(topic_term_freqs_bic, function(freq) {
+  # Make named vector to all terms with 0 for missing
+  all_terms <- unique(unlist(topic_terms_list_bic))
+  v <- numeric(length(all_terms))
+  names(v) <- all_terms
+  v[names(freq)] <- freq
+  return(v)
+}))
+
+# Convert matrix to dfm
+dfm_comparison_bic <- quanteda::as.dfm(topic_term_matrix_bic)
+
+# Create a term frequency table
+freq <- colSums(dfm_comparison_bic)
+freq <- sort(freq, decreasing = TRUE)
+
+# Basic word cloud
+wordcloud(words = names(freq), freq = freq, min.freq = 5,
+          max.words = 50, random.order = FALSE,
+          colors = brewer.pal(8, "Dark2"),
+          scale = c(6, 0.8))
+
+
+```
+
+
+### Remarkable 2 Pen
+
+```{r}
+#Remarkable 2 Pen
+
+
+compute_coherence_RM <- function(topic_terms, dfm) {
+  coherence <- 0
+  for (i in 2:length(topic_terms)) {
+    for (j in 1:(i - 1)) {
+      term_i <- topic_terms[i]
+      term_j <- topic_terms[j]
+      
+      # Check if both terms exist in the dfm
+      if (term_i %in% colnames(dfm) && term_j %in% colnames(dfm)) {
+        # D(term_i and term_j)
+        D_wi_wj <- sum(dfm[, term_i] > 0 & dfm[, term_j] > 0)
+        # D(term_j)
+        D_wj    <- sum(dfm[, term_j] > 0)
+        
+        # Add smoothing +1 to avoid log(0)
+        coherence <- coherence + log((D_wi_wj + 1) / (D_wj + 1))
+      }
+    }
+  }
+  return(coherence)
+}
+
+```
+
+
+```{r}
+#Remarkable 2 Pen
+# Get topic terms
+top_terms_pos_RM <- terms(textmodel_positive_RM_new, 10)
+top_terms_neg_RM <- terms(textmodel_negative_RM_new, 10)
+
+# Filter dfms
+dfm_pos_RM <- dfm_tmp_RM[docvars(dfm_tmp_RM)$ave_sentiment >= 0, ]
+dfm_neg_RM <- dfm_tmp_RM[docvars(dfm_tmp_RM)$ave_sentiment < 0, ]
+
+# Compute coherence per topic
+coherence_scores_pos_RM <- apply(top_terms_pos_RM, 2, function(term_set) {
+  compute_coherence_RM(term_set, dfm_pos_RM)
+})
+
+coherence_scores_neg_RM <- apply(top_terms_neg_RM, 2, function(term_set) {
+  compute_coherence_RM(term_set, dfm_neg_RM)
+})
+
+# Show mean coherence
+cat("Mean coherence (Positive Model):", round(mean(coherence_scores_pos_RM), 3), "\n")
+cat("Mean coherence (Negative Model):", round(mean(coherence_scores_neg_RM), 3), "\n")
+
+# Optional: topic-wise scores
+coherence_scores_pos_RM
+coherence_scores_neg_RM
+
+
+```
+From the result above, we can see that the coherence scores for both positive and negative models are below 0 with negative topic is closer to zero. This indicates that Negative sentiment topics are much more coherent (closer to 0) than the positive ones.
+
+This suggests that the top words in negative-topic documents co-occur more frequently and consistently than in the positive ones.
+
+It could mean that people writing negative reviews are more focused in their vocabulary (e.g., repeating the same criticisms), while positive ones might vary more (e.g., complimenting different features).
+
+**Wordcloud for Remarkable 2 Pen**
+
+
+```{r}
+
+
+# Extract top terms from each topic in positive model
+top_terms_pos_RM <- terms(textmodel_positive_RM_new, 50)
+
+# Extract top terms from each topic in negative model
+top_terms_neg_RM <- terms(textmodel_negative_RM_new, 50)
+
+# Create a list of all topic terms combined with labels
+topic_terms_list_RM <- list()
+
+for(i in 1:2) {
+  topic_terms_list_RM[[paste0("pos_topic", i)]] <- top_terms_pos_RM[, i]
+  topic_terms_list_RM[[paste0("neg_topic", i)]] <- top_terms_neg_RM[, i]
+}
+
+# Build a dfm with counts of these topic terms in the full filtered dfm
+topic_term_freqs_RM <- lapply(topic_terms_list_RM, function(terms_vec) {
+  colSums(dfm_tmp_RM[, intersect(terms_vec, featnames(dfm_tmp_RM))])
+})
+
+# Turn into a matrix with topics as rows, terms as columns
+topic_term_matrix_RM <- do.call(rbind, lapply(topic_term_freqs_RM, function(freq) {
+  # Make named vector to all terms with 0 for missing
+  all_terms <- unique(unlist(topic_terms_list_RM))
+  v <- numeric(length(all_terms))
+  names(v) <- all_terms
+  v[names(freq)] <- freq
+  return(v)
+}))
+
+# Convert matrix to dfm
+dfm_comparison_RM <- quanteda::as.dfm(topic_term_matrix_RM)
+
+# Create a term frequency table
+freq <- colSums(dfm_comparison_RM)
+freq <- sort(freq, decreasing = TRUE)
+
+# Basic word cloud
+wordcloud(words = names(freq), freq = freq, min.freq = 5,
+          max.words = 50, random.order = FALSE,
+          colors = brewer.pal(8, "Dark2"),
+          scale = c(6, 0.8))
+
+
+```
+
+## 8. Statistical Test
+
+#### t-test
+```{r t-test}
+t_test_polarity <- t.test(bic_cristal_reviews$polarity, remarkable2_pen_reviews$polarity)
+print(t_test_polarity)
+t_test_subjectivity <- t.test(bic_cristal_reviews$subjectivity, remarkable2_pen_reviews$subjectivity)
+print(t_test_subjectivity)
+
+
+```
+<br>
+**Polarity Comparison (Sentiment Strength)**
+- t = 2.2545, p-value = 0.0243 → The p-value is below 0.05, meaning the difference in polarity scores is statistically significant. <br>
+- Mean Polarity: Bic Cristal (0.1388) vs. Remarkable2 Pen (0.1180) → Bic Cristal has a higher polarity, suggesting reviews tend to be more positive compared to Remarkable2 Pen. <br>
+- Confidence Interval: (0.0027, 0.0388) → The true difference in means likely falls between these values, confirming the significance.<br>
+- Conclusion: Bic Cristal reviews show more positivity in sentiment than Remarkable2 Pen reviews. <br>
+
+**Subjectivity Comparison (Opinion Strength)**
+- t = -0.96174, p-value = 0.3363 → The p-value is above 0.05, meaning the difference is NOT statistically significant.<br>
+- Mean Subjectivity: Bic Cristal (0.1111) vs. Remarkable2 Pen (0.1137) → The values are very close, indicating both sets of reviews have similar levels of subjective (personal) opinions. <br>
+- Confidence Interval: (-0.0078, 0.0027) → Since it crosses zero, this suggests the difference is likely due to random variation. <br>
+- Conclusion: There is no strong evidence that reviews for Bic Cristal and Remarkable2 Pen differ in terms of subjectivity. <br>
+
+
+
+
+**box plot**
+```{r}
+boxplot(bic_cristal_reviews$polarity, remarkable2_pen_reviews$polarity, 
+        names = c("BIC Cristal", "Remarkable 2"), col = c("lightblue", "lightgreen"),
+        main = "Polarity Comparison")
+
+boxplot(bic_cristal_reviews$subjectivity, remarkable2_pen_reviews$subjectivity, 
+        names = c("BIC Cristal", "Remarkable 2"), col = c("lightblue", "lightgreen"),
+        main = "Subjectivity Comparison")
+
+
+```
+
+#### Anova test
+```{r}
+library(dplyr)
+
+# Combine datasets and add product label
+combined <- bind_rows(
+  bic_cristal_reviews %>% mutate(product = "BIC"),
+  remarkable2_pen_reviews %>% mutate(product = "ReMarkable")
+)
+
+# Add sentiment category (positive, neutral, negative)
+combined <- combined %>%
+  mutate(sentiment_cat = case_when(
+    polarity > 0.1  ~ "positive",
+    polarity < -0.1 ~ "negative",
+    TRUE            ~ "neutral"
+  ))
+
+# Now you can run ANOVA for polarity based on product + sentiment category (or just product)
+anova_result <- aov(polarity ~ product, data = combined)
+summary(anova_result)
+
+```
+**Anova result interpretation**
+p-value: 0.0236
+- Since p < 0.05, the result is statistically significant, meaning the polarity (sentiment) scores differ significantly between BIC and ReMarkable pen reviews. <br>
+
+Product choice impacts sentiment polarity → The brand has a significant effect on review sentiment.<br>
+The difference is not random → Consumers review the two products differently in terms of sentiment. <br>
+However, the effect size (Sum Sq: 0.18) is relatively small, meaning the difference—while significant—is not extremely large. <br>
+
+
+
+
+#### Chi-Square test
+```{r}
+# Example: Add sentiment category if not already present
+bic_cristal_reviews$sentiment_cat <- ifelse(bic_cristal_reviews$polarity >= 0, "positive", "negative")
+remarkable2_pen_reviews$sentiment_cat <- ifelse(remarkable2_pen_reviews$polarity >= 0, "positive", "negative")
+
+# Combine brand label
+bic_cristal_reviews$brand <- "BIC Cristal"
+remarkable2_pen_reviews$brand <- "ReMarkable 2"
+
+# Combine into one data frame
+combined_reviews <- rbind(bic_cristal_reviews, remarkable2_pen_reviews)
+
+# Create contingency table: brand vs sentiment category
+table_sentiment <- table(combined_reviews$brand, combined_reviews$sentiment_cat)
+
+# Run Chi-square test
+chisq_test <- chisq.test(table_sentiment)
+print(table_sentiment)
+print(chisq_test)
+
+```
+**Chi square test result**
+- Chi-Square Statistic (X-squared = 7.6682) <br>
+- Measures the deviation between observed and expected values under the assumption of no relationship between product type and sentiment.<br>
+- A higher value suggests a stronger association.<br>
+- p-value (p = 0.00562) <br>
+- Since p < 0.05, the result is statistically significant. <br>
+- This means sentiment distribution differs significantly between BIC Cristal and ReMarkable 2.
+- The difference is not due to random chance. <br>
+Interpretation & Conclusion <br>
+Product choice impacts sentiment → Reviews for BIC Cristal and ReMarkable 2 show significantly different sentiment patterns.<br>
+BIC Cristal has a higher proportion of positive reviews compared to ReMarkable 2.<br>
+ReMarkable 2 has relatively fewer positive reviews, suggesting consumers rate it less favorably overall.<br>
+
+
+
+## 9. Temporal Dynamics
+
+At this point, as a final analysis, we are going to explore how the polarity values and the number reviews changed over time for both products, this kind of comparison will allow for a more detailed analysis.
+To perform this analysis, we will generate three plots: the first shows the monthly average polarity for each product, the second the the monthly comment count for each product and the third the monthly weighted polarity (average polarity*comment count) for each product.
+
+```{r}
+
+# Convert to proper date format
+safe_parse_date <- function(dates) {
+  tryCatch({
+    as.Date(dates)
+  }, warning = function(w) {
+    message("Warning: ", conditionMessage(w))
+    suppressWarnings(as.Date(dates))
+  }, error = function(e) {
+    message("Error: ", conditionMessage(e))
+    rep(NA, length(dates))
+  })
+}
+
+# Safely convert dates
+bic_reviews_cleaned$Date <- safe_parse_date(bic_reviews_cleaned$Date)
+rm_reviews_cleaned$Date  <- safe_parse_date(rm_reviews_cleaned$Date)
+
+# Combine and format for temporal analysis
+all_reviews <- bind_rows(
+  bic_reviews_cleaned %>% mutate(Product = "BIC Cristal"),
+  rm_reviews_cleaned %>% mutate(Product = "ReMarkable 2 Pen")
+) %>%
+  mutate(Month = floor_date(Date, "month")) %>%
+  filter(!is.na(Month))  # Remove any failed date parses
+
+```
+
+Monthly average polarity over time.
+```{r}
+# Monthly average polarity
+avg_polarity <- all_reviews %>%
+  group_by(Product, Month) %>%
+  summarise(Avg_Polarity = mean(`Polarity score`, na.rm = TRUE), .groups = "drop")
+
+ggplot(avg_polarity, aes(x = Month, y = Avg_Polarity, color = Product)) +
+  geom_line(size = 0.8, alpha = 0.9) +
+  geom_point(size = 2) +
+  scale_x_date(date_labels = "%Y", date_breaks = "1 year", minor_breaks = "1 month") +
+  labs(
+    title = "Monthly Average Polarity per Product",
+    x = "Year",
+    y = "Average Sentiment Polarity",
+    color = "Product"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(legend.position = "bottom", 
+        panel.grid.minor = element_line(color = "gray90"),
+        panel.grid.major.x = element_line(color = "gray75"))
+```
+
+
+Monthly comment count over time.
+```{r}
+# Monthly review count
+review_count <- all_reviews %>%
+  group_by(Product, Month) %>%
+  summarise(Count = n(), .groups = "drop")
+
+ggplot(review_count, aes(x = Month, y = Count, fill = Product)) +
+  geom_col(position = "dodge", width = 25) +
+  scale_x_date(date_labels = "%Y", date_breaks = "1 year", minor_breaks = "1 month") +
+  labs(
+    title = "Monthly Review Volume per Product",
+    x = "Year",
+    y = "Number of Reviews",
+    fill = "Product"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(legend.position = "bottom", 
+        panel.grid.minor = element_line(color = "gray90"),
+        panel.grid.major.x = element_line(color = "gray75"))
+```
+
+Monthly weighted polarity (average polarity x comment count).
+```{r}
+# Weighted polarity (avg polarity * count)
+weighted_polarity <- left_join(avg_polarity, review_count, by = c("Product", "Month")) %>%
+  mutate(Weighted_Polarity = Avg_Polarity * Count)
+
+ggplot(weighted_polarity, aes(x = Month, y = Weighted_Polarity, color = Product)) +
+  geom_line(size = 0.8, alpha = 0.9) +
+  geom_point(size = 2) +
+  scale_x_date(date_labels = "%Y", date_breaks = "1 year", minor_breaks = "1 month") +
+  labs(
+    title = "Monthly Weighted Polarity (Polarity × Volume)",
+    x = "Year",
+    y = "Weighted Sentiment",
+    color = "Product"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(legend.position = "bottom", 
+        panel.grid.minor = element_line(color = "gray90"),
+        panel.grid.major.x = element_line(color = "gray75"))
+```
+
+### t-test
+
+
+```{r}
+# Extract weighted polarity values
+bic_weighted_polarity <- weighted_polarity %>% filter(Product == "BIC Cristal") %>% pull(Weighted_Polarity)
+rm_weighted_polarity  <- weighted_polarity %>% filter(Product == "ReMarkable 2 Pen") %>% pull(Weighted_Polarity)
+
+  # Perform t-test comparing weighted polarity between products
+t_test_result <- t.test(bic_weighted_polarity, rm_weighted_polarity, alternative = "two.sided")
+
+# Display results
+print(t_test_result)
+
+```
+**t-test interpretation**
+- p-value = 0.004704 → Since p < 0.05, this result is statistically significant. The difference in sentiment scores is unlikely due to random variation. <br>
+- 95% Confidence Interval (0.3244 to 1.7378) → This means the true difference in weighted <br> sentiment polarity likely falls within this range. <br>
+- Mean Weighted Polarity <br>
+- BIC Cristal: 2.3311 <br>
+- ReMarkable 2 Pen: 1.3000 <br>
+- BIC Cristal reviews tend to have stronger positive sentiment, meaning users express more favorable emotions toward it compared to ReMarkable 2. <br>
+Interpretation <br>
+Statistically significant difference: The sentiment polarity of reviews differs meaningfully between BIC Cristal and ReMarkable 2.<br>
+Higher positive sentiment for BIC Cristal: Consumers review it more favorably compared to ReMarkable 2. <br>
+Confidence interval confirms the difference: The range does not cross zero, reinforcing that the polarity gap is real. <br>
+
+### Anova test
+
+```{r annova test}
+# Ensure Product is a factor
+weighted_polarity <- weighted_polarity %>% mutate(Product = factor(Product))
+
+# Perform ANOVA
+anova_result <- aov(Weighted_Polarity ~ Product, data = weighted_polarity)
+
+# Display results
+summary(anova_result)
+
+```
+**Anova test interpretation** <br>
+- F-Value (F = 8.955) → Indicates a moderate difference between the product groups. <br>
+- p-Value (p = 0.00334) → Since p < 0.05, this result is statistically significant. <br>
+- The difference in weighted sentiment is not due to random variation. <br>
+- The reviews for BIC Cristal and ReMarkable 2 Pen show meaningful differences in polarity trends. <br>
+Conclusion <br>
+Product choice influences weighted polarity → Consumer sentiment varies significantly between BIC Cristal and ReMarkable 2 Pen. <br>
+Since p < 0.01, the difference is strong → Review sentiment distributions are meaningfully distinct. <br>
+Effect size considerations: The F-value suggests a moderate effect, meaning while there is a difference, it may not be an extremely large one. <br>
+
+### Chi-Square test
+
+```{r}
+# Define positive and negative sentiment categories
+weighted_polarity <- weighted_polarity %>%
+  mutate(Sentiment = ifelse(Weighted_Polarity > 0, "Positive", "Negative"))
+
+# Create a contingency table
+table_sentiment <- table(weighted_polarity$Product, weighted_polarity$Sentiment)
+
+# Print table to verify
+print(table_sentiment)
+
+# Perform Pearson's Chi-Square Test
+chi_test_result <- chisq.test(table_sentiment)
+
+# Display results
+print(chi_test_result)
+
+```
+**Chi-Square test interpretation** <br>
+- p-Value (p = 0.7953) → Since p > 0.05, this result is not statistically significant.<br>
+Interpretation <br>
+Weak association between product and sentiment → Sentiment distribution is fairly similar for both products. <br>
+The difference observed may be due to random variation rather than a meaningful impact from product type.<br>
+
+**Insight**<br>
+BIC is more positive, but the effect is small → Detected by t-test & ANOVA, but not strong enough for Chi-Square.<br>
+Chi-Square struggles with low "Negative" counts → Meaning it lacks the statistical power to confirm subtle sentiment shifts.<br>
+Both results are valid → The difference is real, but sentiment categorization alone doesn't fully capture it.<br>
+
+# Last 3 years analysis
+By looking at the graphs (even if both fluctuate greatly), we can observe that, while previously, since 2019 (when we have the first ReMarkable pen comments), sentiment scores for the BIC Cristal where almost constantly higher, starting approximately from 2022, sentiment score trends between the two products are more similar. With a start of 2025 that again shows BIC Cristal's average and weighted sentiment scores higher. For this reason, we are now going to perform again the statistical tests completed in the previous section, but focusing only on the last three years, in this way we can observe if there is still a significant difference in the weighted scores between the products or if the sentiment regarding one or both pens has possibly changed in these last years.
+We first subset the 'weighted_polarity' data set to have only the comments posted starting from 2022.
+```{r}
+# 1. Subset the existing 'weighted_polarity' data frame
+weighted_recent <- weighted_polarity %>%
+  filter(as.Date("2022-01-01") <= Month)
+```
+
+Then we perform the statistical tests.
+```{r}
+# 2. T-TEST
+bic_weighted_recent <- weighted_recent %>%
+  filter(Product == "BIC Cristal") %>%
+  pull(Weighted_Polarity)
+
+rm_weighted_recent  <- weighted_recent %>%
+  filter(Product == "ReMarkable 2 Pen") %>%
+  pull(Weighted_Polarity)
+
+t_test_recent <- t.test(bic_weighted_recent,
+                        rm_weighted_recent,
+                        alternative = "two.sided")
+
+print("T-Test Results for Weighted Polarity (Jan 2022–present):")
+print(t_test_recent)
+```
+
+
+```{r}
+# 3. ANOVA test
+anova_recent <- aov(Weighted_Polarity ~ Product,
+                    data = weighted_recent)
+
+print("ANOVA Results for Weighted Polarity by Product (Jan 2022–present):")
+summary(anova_recent)
+```
+
+```{r}
+# 4. CHI-SQUARE test
+weighted_recent <- weighted_recent %>%
+  mutate(Sentiment = ifelse(Weighted_Polarity > 0, "Positive", "Negative"))
+
+table_sentiment_recent <- table(weighted_recent$Product,
+                                weighted_recent$Sentiment)
+
+print("Contingency Table (Product × Sentiment) for 2022–present:")
+print(table_sentiment_recent)
+
+chi_sq_recent <- chisq.test(table_sentiment_recent)
+
+print("Chi-Square Test Results (Jan 2022–present):")
+print(chi_sq_recent)
+```
+
+Even considering just the last three years, the statistical tests performed give us similar results as before, but they indicate that the difference between the weighted polarity scores decreased (the p value increased), even if that difference remained significant for both the t-test and the ANOVA test. The chi-square test, as before, results in a statistically non-significant result.
+
+Now, as a last analysis, also out of curiosity, we can do the same statistical tests, but only on the period between 2022 and the end of 2024, thus we won't consider also reviews published after the start of 2025.
+```{r}
+# 1. Subset the existing 'weighted_polarity' data frame
+weighted_recent1 <- weighted_polarity %>%
+  filter(as.Date("2022-01-01") <= Month) %>%
+  filter(Month <= as.Date("2024-12-01"))
+```
+
+```{r}
+# 2. T-TEST
+bic_weighted_recent1 <- weighted_recent1 %>%
+  filter(Product == "BIC Cristal") %>%
+  pull(Weighted_Polarity)
+
+rm_weighted_recent1  <- weighted_recent1 %>%
+  filter(Product == "ReMarkable 2 Pen") %>%
+  pull(Weighted_Polarity)
+
+t_test_recent1 <- t.test(bic_weighted_recent1,
+                        rm_weighted_recent1,
+                        alternative = "two.sided")
+
+print("T-Test Results for Weighted Polarity (Jan 2022–2025):")
+print(t_test_recent1)
+```
+
+```{r}
+# 3. ANOVA test
+anova_recent1 <- aov(Weighted_Polarity ~ Product,
+                    data = weighted_recent1)
+
+print("ANOVA Results for Weighted Polarity by Product (Jan 2022–2025):")
+summary(anova_recent1)
+```
+
+```{r}
+# 4. CHI-SQUARE test
+weighted_recent1 <- weighted_recent1 %>%
+  mutate(Sentiment = ifelse(Weighted_Polarity > 0, "Positive", "Negative"))
+
+table_sentiment_recent1 <- table(weighted_recent1$Product,
+                                weighted_recent1$Sentiment)
+
+print("Contingency Table (Product × Sentiment) for 2022–2025:")
+print(table_sentiment_recent1)
+
+chi_sq_recent1 <- chisq.test(table_sentiment_recent1)
+
+print("Chi-Square Test Results (Jan 2022–2025):")
+print(chi_sq_recent1)
+```
+
+As it can be observed, all the performed statistical tests result in statistically non-significant differences between the means. Thus, in the period starting from the beginning of 2022 until the end of 2024, the weighted polarity scores were similar between the two products.
