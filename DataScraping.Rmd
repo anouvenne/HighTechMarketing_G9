@@ -1,0 +1,127 @@
+---
+title: "DataScraping"
+output: html_document
+date: "2025-05-24"
+---
+
+First, I setup the required packeges to scrape the web and create the two desired data sets.
+```{r}
+# ---------------------------
+# CHUNK 1: PACKAGE SETUP
+# ---------------------------
+if(!require(pacman)) install.packages("pacman")
+pacman::p_load(
+  rvest, httr, dplyr, lubridate, 
+  RedditExtractoR, purrr, stringr, tibble,
+  polite, digest, logger, ratelimitr
+)
+
+# Create rate-limited version of critical functions
+rate_limited_find <- ratelimitr::limit_rate(
+  RedditExtractoR::find_thread_urls,
+  ratelimitr::rate(n = 1, period = 3),  # 1 call/3 seconds
+  ratelimitr::rate(n = 5, period = 60)   # 5 calls/minute
+)
+
+rate_limited_content <- ratelimitr::limit_rate(
+  RedditExtractoR::get_thread_content,
+  ratelimitr::rate(n = 1, period = 5)  # 1 call/5 seconds
+)
+```
+
+At this point, it is possible to proceed with web scraping, in particular I will scrape reddit, looking for reviews.
+
+## WEB SCRAPING
+
+Here the code chunk that creates the function to scrape reddit.
+```{r}
+# ---------------------------
+# CHUNK 2: REDDIT SCRAPER
+# ---------------------------
+safe_scrape_reddit <- function(product_name) {
+  tryCatch({
+    # Search parameters
+    search_config <- list(
+      "BIC-Cristal" = list(
+  terms = "BIC+pen+OR+ballpoint+OR+Cristal -meth -glass -vape",
+  subs = c("pens", "stationery", "Art", "BuyItForLife", "drawing", "Productivity", "OfficeSupplies"),
+  include = "bic|cristal|ballpoint|cheap.*pen",
+  exclude = "meth|glass|drug|vape"
+),
+      "Remarkable-2" = list(
+        terms = "reMarkable+pen+OR+rm2+stylus -tablet",
+        subs = c("RemarkableTablet", "EDC", "DigitalNoteTaking"),
+        include = "pen|stylus|nib",
+        exclude = "tablet|device|software"
+      )
+    )
+    
+    config <- search_config[[product_name]]
+    
+    # Get threads with rate limiting
+    threads <- rate_limited_find(
+      keywords = config$terms,
+      subreddit = config$subs,
+      sort_by = "relevance",
+      period = "all"
+    )
+    
+    if(nrow(threads) < 5) stop("Insufficient threads found")
+    
+    # Scrape comments with rate limiting
+    content <- map_df(head(threads$url, 1000), ~{    # By increasing the number you increase data sets 
+      tryCatch({
+        rate_limited_content(.x)$comments %>%
+          transmute(
+            review_id = paste0(product_name, "-", digest(comment)),
+            date = as_date(as_datetime(date)),
+            review = str_squish(comment)
+          ) %>%
+          filter(
+            str_count(review, "\\S+") >= 10,
+            str_detect(tolower(review), config$include),
+            !str_detect(tolower(review), config$exclude)
+          )
+      }, error = function(e) tibble())
+    })
+    
+# Keep only the first 2000 unique reviews
+slice_head(content %>% distinct(), n = 2000)     # To obtain around 2000 reviews per product
+
+  } )
+}
+```
+
+First, product specific search parameters are set to exclude non-relevant content, then, subreddits are defined to focus on relevant communities for our products. After that there are some quality control layers, where for example a number of minimum 10 words per reviews is set. Finally some safety mechanisms are introduced to ensure the correct functioning of the function.
+After creating the function, it is possible to move to data collection, where the scraping function is applied to our products of interest to successfully obtain the reviews and create the data sets.
+
+
+## DATA COLLECTION
+
+Here are therefore created clean product-specific data sets for comparative analysis.
+```{r}
+# ---------------------------
+# CHUNK 3: GUARANTEED DATA COLLECTION
+# ---------------------------
+# BIC Cristal
+bic_data <- safe_scrape_reddit("BIC-Cristal") %>% 
+  mutate(product = "BIC-Cristal") %>%
+  distinct(review, .keep_all = TRUE)
+
+# Remarkable 2 Pen
+remarkable_data <- safe_scrape_reddit("Remarkable-2") %>%
+  mutate(product = "Remarkable-2") %>%
+  filter(str_detect(tolower(review), "pen|stylus"))  # To focus only on the pen and isolate it from the tablet
+```
+
+
+Finally, with this last chunk the two data sets are stored in the same working directory as the RMarkdown file. In this way it will be possible for us to work with this data sets for the purposes of our report.
+```{r}
+# ---------------------------
+# CHUNK 5: DATA EXPORT
+# ---------------------------
+write.csv(bic_data, "bic_cristal_reddit2.csv", row.names = FALSE)
+write.csv(remarkable_data, "remarkable2_pen_reddit2.csv", row.names = FALSE)
+```
+
+
